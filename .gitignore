@@ -1,0 +1,12 @@
+.gradle/
+.idea/
+local.properties
+**/build/
+*.iml
+*.apk
+*.aab
+*.xcuserstate
+xcuserdata/
+DerivedData/
+.DS_Store
+.tmp/

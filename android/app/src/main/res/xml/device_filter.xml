@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- USB Video Class. Matching is class-based; no vendor/product lock-in. -->
+    <usb-device class="14" />
+</resources>
+
