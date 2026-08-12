@@ -28,7 +28,9 @@
     <application
         android:name=".RammyApplication"
         android:allowBackup="false"
+        android:icon="@mipmap/ic_launcher"
         android:label="Rammy AI Gun"
+        android:roundIcon="@mipmap/ic_launcher_round"
         android:supportsRtl="true"
         android:theme="@style/Theme.RammyAIGun"
         android:usesCleartextTraffic="false">

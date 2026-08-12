@@ -1,6 +1,22 @@
 # Progress
 
-Last updated: 2026-08-12
+Last updated: 2026-08-13
+
+## Play Store identity update
+
+- Official launcher logo changed to the supplied `logo.png` without redesign, recoloring, cropping, or proportion changes
+- Exact source preserved at `shared-assets/rammy-ai-gun-logo.png`
+- Source PNG: 1254 x 1254 RGB; SHA-256 `D9D8E624E9897E9023D7AE42CB44876DBB3FAF0A21383E77593CD2DB9E076250`
+- Normal and round launcher PNGs generated for mdpi (48), hdpi (72), xhdpi (96), xxhdpi (144), and xxxhdpi (192)
+- Adaptive launcher and adaptive round launcher configured for Android 8+ with a mask-safe inset and black background
+- Manifest `android:icon` and `android:roundIcon` now reference the new launcher resources
+- Final `versionName`: `1.0.0`
+- Final `versionCode`: `2` (advanced conservatively because Play Console usage of code 1 cannot be verified from the repository)
+- Release APK build: **passed** (`app-release-unsigned.apk`)
+- Release AAB build: **passed** (`app-release.aab`)
+- Release artifacts are unsigned because the repository has no release signing configuration; sign them with the private release/upload key before distribution or Play Console upload
+- Release lint-vital check: **passed**
+- Camera, USB/UVC, media, permission, and UI-control source files were not changed for this identity update
 
 ## Milestone status
 
@@ -59,4 +75,4 @@ Full implementation and physical test details: `CAMERA_CONTROLS.md`.
 - Visible mirror/vertical-flip buttons (none exist in the supplied screen)
 - Recording audio
 - Full settings milestone beyond the already-visible diagnostics/settings overlay
-- Release packaging
+- Release signing and Play Console upload
