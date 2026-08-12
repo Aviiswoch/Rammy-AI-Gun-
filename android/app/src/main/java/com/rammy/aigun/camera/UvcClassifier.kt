@@ -14,5 +14,8 @@ object UvcClassifier {
     internal fun isVideoClass(deviceClass: Int, interfaceClasses: List<Int>): Boolean =
         deviceClass == UsbConstants.USB_CLASS_VIDEO ||
             interfaceClasses.any { it == UsbConstants.USB_CLASS_VIDEO }
-}
 
+    fun videoInterfaceIndices(device: UsbDevice): List<Int> =
+        List(device.interfaceCount) { it }
+            .filter { device.getInterface(it).interfaceClass == UsbConstants.USB_CLASS_VIDEO }
+}
