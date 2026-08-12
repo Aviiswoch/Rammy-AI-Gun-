@@ -6,6 +6,8 @@
     <string>Rammy AI Gun</string>
     <key>NSCameraUsageDescription</key>
     <string>Rammy AI Gun needs camera access to display an external camera exposed by this device.</string>
+    <key>NSPhotoLibraryAddUsageDescription</key>
+    <string>Rammy AI Gun saves the photos and videos you create to your Photos library.</string>
     <key>UILaunchScreen</key>
     <dict>
         <key>UIColorName</key>
@@ -26,4 +28,3 @@
     </array>
 </dict>
 </plist>
-

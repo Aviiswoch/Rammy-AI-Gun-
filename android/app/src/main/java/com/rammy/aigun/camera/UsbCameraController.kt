@@ -10,6 +10,9 @@ import android.content.pm.PackageManager
 import android.hardware.usb.UsbDevice
 import android.hardware.usb.UsbManager
 import android.os.Build
+import android.os.Handler
+import android.os.Looper
+import android.os.ParcelFileDescriptor
 import android.os.SystemClock
 import android.util.Log
 import android.view.Surface
@@ -17,12 +20,21 @@ import androidx.core.content.ContextCompat
 import com.herohan.uvcapp.CameraException
 import com.herohan.uvcapp.CameraHelper
 import com.herohan.uvcapp.ICameraHelper
+import com.herohan.uvcapp.IImageCapture
+import com.herohan.uvcapp.VideoCapture
 import com.rammy.aigun.BuildConfig
+import com.serenegiant.opengl.renderer.MirrorMode
 import com.serenegiant.usb.Size
 import com.serenegiant.widget.CameraViewInterface
+import java.io.OutputStream
+import java.util.concurrent.Executors
+import java.util.concurrent.atomic.AtomicBoolean
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.asSharedFlow
 
 class UsbCameraController(context: Context) {
     private val appContext = context.applicationContext
@@ -41,6 +53,18 @@ class UsbCameraController(context: Context) {
     )
     val diagnostics: StateFlow<UsbDiagnostics> = mutableDiagnostics.asStateFlow()
 
+    private val mutableControls = MutableStateFlow(CameraControlsState())
+    val controls: StateFlow<CameraControlsState> = mutableControls.asStateFlow()
+
+    private val mutableEvents = MutableSharedFlow<CameraUiEvent>(extraBufferCapacity = 8)
+    val events: SharedFlow<CameraUiEvent> = mutableEvents.asSharedFlow()
+
+    private val mediaStore = MediaStorePublisher(appContext)
+    private val mediaExecutor = Executors.newSingleThreadExecutor()
+    private val mainHandler = Handler(Looper.getMainLooper())
+    private val photoCaptureGuard = AtomicBoolean(false)
+    private val mediaSessionLock = Any()
+
     private var helper: CameraHelper? = null
     private var previewView: FirstFrameTextureView? = null
     private var currentSurface: Surface? = null
@@ -52,6 +76,8 @@ class UsbCameraController(context: Context) {
     private var receiverRegistered = false
     private var usbPermissionRequestInFlight = false
     private var connectionStartedAt = 0L
+    private var activePhoto: ActivePhoto? = null
+    private var activeRecording: ActiveRecording? = null
 
     private val permissionIntent: PendingIntent by lazy {
         val flags = PendingIntent.FLAG_UPDATE_CURRENT or
@@ -138,7 +164,10 @@ class UsbCameraController(context: Context) {
                 fail("UVC_PREVIEW_START_FAILED", it.message ?: "The UVC preview could not start.")
             }.isSuccess
             if (!previewStarted) return
-            size?.let { previewView?.setAspectRatio(it.width, it.height) }
+            size?.let { previewView?.setSourceSize(it.width, it.height) }
+            configureMediaCapture(size)
+            applyRendererTransform()
+            previewView?.setCameraTransform(mutableControls.value.transform)
 
             val stream = ActiveStream(
                 device = device.toSummary(),
@@ -201,6 +230,8 @@ class UsbCameraController(context: Context) {
         previewView?.setCallback(null)
         previewView = view.apply {
             setCallback(viewCallback)
+            setCameraTransform(mutableControls.value.transform)
+            selectedSize?.let { setSourceSize(it.width, it.height) }
             onFirstFrame = {
                 debug("[UVC] First frame received")
                 metric("firstFrameMs", connectionElapsed())
@@ -281,7 +312,98 @@ class UsbCameraController(context: Context) {
         }
     }
 
+    fun takePhoto() {
+        if (mutableState.value !is CameraConnectionState.Streaming || helper?.isCameraOpened != true) {
+            mutableEvents.tryEmit(CameraUiEvent.Message("Camera is not ready"))
+            return
+        }
+        if (!photoCaptureGuard.compareAndSet(false, true)) return
+
+        mutableControls.value = mutableControls.value.copy(photoCaptureInProgress = true)
+        mutableEvents.tryEmit(CameraUiEvent.Shutter)
+        mediaExecutor.execute {
+            var pending: MediaStorePublisher.PendingMedia? = null
+            var output: OutputStream? = null
+            try {
+                pending = mediaStore.createPhoto()
+                output = mediaStore.resolver.openOutputStream(pending.uri, "w")
+                    ?: error("Unable to open the Gallery photo output")
+                val session = ActivePhoto(pending, output)
+                synchronized(mediaSessionLock) { activePhoto = session }
+                val options = IImageCapture.OutputFileOptions.Builder(output).build()
+                helper?.takePicture(
+                    options,
+                    object : IImageCapture.OnImageCaptureCallback {
+                        override fun onImageSaved(outputFileResults: IImageCapture.OutputFileResults) {
+                            completePhoto(session, success = true, errorMessage = null)
+                        }
+
+                        override fun onError(
+                            imageCaptureError: Int,
+                            message: String,
+                            cause: Throwable?,
+                        ) {
+                            completePhoto(
+                                session,
+                                success = false,
+                                errorMessage = message.ifBlank { "Photo could not be saved" },
+                            )
+                        }
+                    },
+                ) ?: error("The UVC image-capture pipeline is unavailable")
+            } catch (error: Exception) {
+                runCatching { output?.close() }
+                pending?.let(mediaStore::discard)
+                synchronized(mediaSessionLock) { activePhoto = null }
+                finishPhotoState(error.message ?: "Photo could not be saved")
+            }
+        }
+    }
+
+    fun toggleRecording() {
+        when (mutableControls.value.recording) {
+            RecordingState.Idle -> startRecording()
+            is RecordingState.Recording -> stopRecordingSafely("User stopped recording")
+            RecordingState.Starting,
+            RecordingState.Stopping,
+            -> Unit
+        }
+    }
+
+    fun rotatePreviewClockwise() {
+        if (mutableState.value !is CameraConnectionState.Streaming) return
+        val current = mutableControls.value
+        val nextRotation = (current.transform.rotationDegrees + 90) % 360
+        mutableControls.value = current.copy(
+            transform = current.transform.copy(rotationDegrees = nextRotation),
+        )
+        applyRendererTransform()
+        previewView?.setCameraTransform(mutableControls.value.transform)
+        mutableEvents.tryEmit(
+            CameraUiEvent.Message(if (nextRotation == 0) "Normal" else "$nextRotation°"),
+        )
+    }
+
+    fun toggleDisplayMode() {
+        if (mutableState.value !is CameraConnectionState.Streaming) return
+        val current = mutableControls.value
+        val next = if (current.transform.displayMode == PreviewDisplayMode.Fit) {
+            PreviewDisplayMode.Fill
+        } else {
+            PreviewDisplayMode.Fit
+        }
+        mutableControls.value = current.copy(transform = current.transform.copy(displayMode = next))
+        previewView?.setCameraTransform(mutableControls.value.transform)
+        mutableEvents.tryEmit(CameraUiEvent.Message(if (next == PreviewDisplayMode.Fit) "Fit" else "Fill"))
+    }
+
+    fun onAppBackgrounded() {
+        stopRecordingSafely("App moved to background")
+    }
+
     fun destroy() {
+        stopRecordingSafely("App closed")
+        cancelActivePhoto()
         closeCurrentCamera()
         helper?.setStateCallback(null)
         helper?.releaseAll()
@@ -291,6 +413,236 @@ class UsbCameraController(context: Context) {
             receiverRegistered = false
         }
         started = false
+    }
+
+    private fun completePhoto(session: ActivePhoto, success: Boolean, errorMessage: String?) {
+        mediaExecutor.execute {
+            val ownsSession = synchronized(mediaSessionLock) {
+                if (activePhoto !== session) false else {
+                    activePhoto = null
+                    true
+                }
+            }
+            if (!ownsSession) return@execute
+            runCatching { session.output.close() }
+            if (success) {
+                runCatching { mediaStore.publish(session.media) }
+                    .onSuccess { finishPhotoState(null) }
+                    .onFailure {
+                        mediaStore.discard(session.media)
+                        finishPhotoState(it.message ?: "Photo could not be published to Gallery")
+                    }
+            } else {
+                mediaStore.discard(session.media)
+                finishPhotoState(errorMessage ?: "Photo could not be saved")
+            }
+        }
+    }
+
+    private fun finishPhotoState(errorMessage: String?) {
+        photoCaptureGuard.set(false)
+        mutableControls.value = mutableControls.value.copy(photoCaptureInProgress = false)
+        mutableEvents.tryEmit(
+            CameraUiEvent.Message(errorMessage ?: "Photo saved"),
+        )
+    }
+
+    private fun cancelActivePhoto() {
+        val session = synchronized(mediaSessionLock) {
+            activePhoto.also { activePhoto = null }
+        } ?: return
+        mediaExecutor.execute {
+            runCatching { session.output.close() }
+            mediaStore.discard(session.media)
+            finishPhotoState("Photo capture interrupted")
+        }
+    }
+
+    private fun startRecording() {
+        val stream = (mutableState.value as? CameraConnectionState.Streaming)?.stream
+        if (stream == null || helper?.isCameraOpened != true) {
+            mutableEvents.tryEmit(CameraUiEvent.Message("Camera is not ready"))
+            return
+        }
+        if (mutableControls.value.recording != RecordingState.Idle) return
+        mutableControls.value = mutableControls.value.copy(recording = RecordingState.Starting)
+
+        mediaExecutor.execute {
+            if (mutableControls.value.recording != RecordingState.Starting) return@execute
+            var pending: MediaStorePublisher.PendingMedia? = null
+            var descriptor: ParcelFileDescriptor? = null
+            try {
+                pending = mediaStore.createVideo()
+                descriptor = mediaStore.resolver.openFileDescriptor(pending.uri, "rw")
+                    ?: error("Unable to open the Gallery video output")
+                if (mutableControls.value.recording != RecordingState.Starting) {
+                    descriptor.close()
+                    mediaStore.discard(pending)
+                    return@execute
+                }
+                val session = ActiveRecording(pending, descriptor)
+                synchronized(mediaSessionLock) { activeRecording = session }
+                configureVideoCapture(stream)
+                val options = VideoCapture.OutputFileOptions.Builder(descriptor.fileDescriptor).build()
+                val cameraHelper = helper ?: error("The UVC recording pipeline is unavailable")
+                cameraHelper.startRecording(
+                    options,
+                    object : VideoCapture.OnVideoCaptureCallback {
+                        override fun onStart() {
+                            if (!isActiveRecording(session)) return
+                            session.started.set(true)
+                            if (mutableControls.value.recording == RecordingState.Stopping) {
+                                helper?.stopRecording()
+                                return
+                            }
+                            mutableControls.value = mutableControls.value.copy(
+                                recording = RecordingState.Recording(SystemClock.elapsedRealtime()),
+                            )
+                        }
+
+                        override fun onVideoSaved(outputFileResults: VideoCapture.OutputFileResults) {
+                            finishRecording(session, publish = true, message = "Video saved")
+                        }
+
+                        override fun onError(videoCaptureError: Int, message: String, cause: Throwable?) {
+                            finishRecording(
+                                session,
+                                publish = false,
+                                message = message.ifBlank { "Video recording failed" },
+                            )
+                        }
+                    },
+                )
+                mainHandler.postDelayed(
+                    {
+                        if (
+                            isActiveRecording(session) &&
+                            mutableControls.value.recording == RecordingState.Starting &&
+                            helper?.isRecording != true
+                        ) {
+                            finishRecording(session, publish = false, message = "Video recorder did not start")
+                        }
+                    },
+                    RECORDING_START_TIMEOUT_MS,
+                )
+            } catch (error: Exception) {
+                runCatching { descriptor?.close() }
+                pending?.let(mediaStore::discard)
+                synchronized(mediaSessionLock) { activeRecording = null }
+                mutableControls.value = mutableControls.value.copy(recording = RecordingState.Idle)
+                mutableEvents.tryEmit(CameraUiEvent.Message(error.message ?: "Video recording failed"))
+            }
+        }
+    }
+
+    private fun stopRecordingSafely(reason: String) {
+        val recordingState = mutableControls.value.recording
+        if (recordingState == RecordingState.Idle || recordingState == RecordingState.Stopping) return
+        val session = synchronized(mediaSessionLock) { activeRecording } ?: run {
+            mutableControls.value = mutableControls.value.copy(recording = RecordingState.Idle)
+            return
+        }
+        mutableControls.value = mutableControls.value.copy(recording = RecordingState.Stopping)
+        debug("[UVC] Stopping recording: $reason")
+        runCatching { helper?.stopRecording() }
+            .onFailure {
+                finishRecording(session, publish = false, message = "Video recording could not stop safely")
+                return
+            }
+
+        mainHandler.postDelayed(
+            {
+                if (!isActiveRecording(session)) return@postDelayed
+                val hasData = runCatching { session.descriptor.statSize > 0L }.getOrDefault(false)
+                finishRecording(
+                    session,
+                    publish = hasData && session.started.get(),
+                    message = if (hasData && session.started.get()) {
+                        "Recording interrupted; partial video saved"
+                    } else {
+                        "Recording interrupted"
+                    },
+                )
+            },
+            RECORDING_FINALIZE_TIMEOUT_MS,
+        )
+    }
+
+    private fun finishRecording(
+        session: ActiveRecording,
+        publish: Boolean,
+        message: String,
+    ) {
+        mediaExecutor.execute {
+            val ownsSession = synchronized(mediaSessionLock) {
+                if (activeRecording !== session) false else {
+                    activeRecording = null
+                    true
+                }
+            }
+            if (!ownsSession) return@execute
+            runCatching { session.descriptor.close() }
+            if (publish) {
+                runCatching { mediaStore.publish(session.media) }
+                    .onFailure { mediaStore.discard(session.media) }
+            } else {
+                mediaStore.discard(session.media)
+            }
+            mutableControls.value = mutableControls.value.copy(recording = RecordingState.Idle)
+            mutableEvents.tryEmit(
+                CameraUiEvent.Message(
+                    if (publish) message else message.ifBlank { "Video recording failed" },
+                ),
+            )
+        }
+    }
+
+    private fun isActiveRecording(session: ActiveRecording): Boolean =
+        synchronized(mediaSessionLock) { activeRecording === session }
+
+    private fun configureMediaCapture(size: Size?) {
+        helper?.imageCaptureConfig?.apply {
+            setJpegCompressionQuality(JPEG_QUALITY)
+            helper?.imageCaptureConfig = this
+        }
+        val fps = size?.fps?.takeIf { it > 0 } ?: DEFAULT_RECORDING_FPS
+        helper?.videoCaptureConfig?.apply {
+            setAudioCaptureEnable(false)
+            setVideoFrameRate(fps)
+            setIFrameInterval(RECORDING_I_FRAME_INTERVAL_SECONDS)
+            helper?.videoCaptureConfig = this
+        }
+    }
+
+    private fun configureVideoCapture(stream: ActiveStream) {
+        helper?.videoCaptureConfig?.apply {
+            setAudioCaptureEnable(false)
+            setVideoFrameRate(stream.fps.takeIf { it > 0 } ?: DEFAULT_RECORDING_FPS)
+            setBitRate(recordingBitRate(stream.width, stream.height))
+            setIFrameInterval(RECORDING_I_FRAME_INTERVAL_SECONDS)
+            helper?.videoCaptureConfig = this
+        }
+    }
+
+    private fun recordingBitRate(width: Int, height: Int): Int = when {
+        width * height >= 1920 * 1080 -> 8_000_000
+        width * height >= 1280 * 720 -> 5_000_000
+        else -> 2_500_000
+    }
+
+    private fun applyRendererTransform() {
+        val transform = mutableControls.value.transform
+        val mirrorMode = when {
+            transform.mirrorHorizontal && transform.mirrorVertical -> MirrorMode.MIRROR_BOTH
+            transform.mirrorHorizontal -> MirrorMode.MIRROR_HORIZONTAL
+            transform.mirrorVertical -> MirrorMode.MIRROR_VERTICAL
+            else -> MirrorMode.MIRROR_NORMAL
+        }
+        helper?.previewConfig?.apply {
+            setRotation(transform.rotationDegrees)
+            setMirror(mirrorMode)
+            helper?.previewConfig = this
+        }
     }
 
     private fun start() {
@@ -451,6 +803,8 @@ class UsbCameraController(context: Context) {
     private fun handleDetach(device: UsbDevice) {
         if (!isCurrent(device)) return
         debug("[USB] Camera detached VID=${device.vendorId} PID=${device.productId}")
+        stopRecordingSafely("Camera disconnected")
+        cancelActivePhoto()
         closeCurrentCamera()
         currentDevice = null
         usbPermissionRequestInFlight = false
@@ -597,12 +951,28 @@ class UsbCameraController(context: Context) {
             getParcelableExtra(UsbManager.EXTRA_DEVICE)
         }
 
+    private data class ActivePhoto(
+        val media: MediaStorePublisher.PendingMedia,
+        val output: OutputStream,
+    )
+
+    private data class ActiveRecording(
+        val media: MediaStorePublisher.PendingMedia,
+        val descriptor: ParcelFileDescriptor,
+        val started: AtomicBoolean = AtomicBoolean(false),
+    )
+
     private companion object {
         const val ACTION_USB_PERMISSION = "com.rammy.aigun.USB_PERMISSION"
         const val USB_PERMISSION_REQUEST_CODE = 4107
         const val FALLBACK_RETRY_DELAY_MS = 120L
         const val USB_TAG = "RammyUsb"
         const val METRICS_TAG = "RammyCameraMetrics"
+        const val JPEG_QUALITY = 95
+        const val DEFAULT_RECORDING_FPS = 30
+        const val RECORDING_I_FRAME_INTERVAL_SECONDS = 1
+        const val RECORDING_START_TIMEOUT_MS = 8_000L
+        const val RECORDING_FINALIZE_TIMEOUT_MS = 5_000L
 
         const val UVC_FORMAT_UNCOMPRESSED = 4
         const val UVC_FRAME_UNCOMPRESSED = 5

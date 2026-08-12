@@ -1,44 +1,78 @@
 # Progress
 
-Last updated: 2026-08-12
+Last updated: 2026-08-13
+
+## Play Store identity update
+
+- Official launcher logo changed to the supplied `logo.png` without redesign, recoloring, cropping, or proportion changes
+- Exact source preserved at `shared-assets/rammy-ai-gun-logo.png`
+- Source PNG: 1254 x 1254 RGB; SHA-256 `D9D8E624E9897E9023D7AE42CB44876DBB3FAF0A21383E77593CD2DB9E076250`
+- Normal and round launcher PNGs generated for mdpi (48), hdpi (72), xhdpi (96), xxhdpi (144), and xxxhdpi (192)
+- Adaptive launcher and adaptive round launcher configured for Android 8+ with a mask-safe inset and black background
+- Manifest `android:icon` and `android:roundIcon` now reference the new launcher resources
+- Final `versionName`: `1.0.0`
+- Final `versionCode`: `2` (advanced conservatively because Play Console usage of code 1 cannot be verified from the repository)
+- Release APK build: **passed** (`app-release-unsigned.apk`)
+- Release AAB build: **passed** (`app-release.aab`)
+- Release artifacts are unsigned because the repository has no release signing configuration; sign them with the private release/upload key before distribution or Play Console upload
+- Release lint-vital check: **passed**
+- Camera, USB/UVC, media, permission, and UI-control source files were not changed for this identity update
 
 ## Milestone status
 
-- Milestone 1: complete (Android build verified; iOS requires macOS/Xcode verification)
-- Milestone 2: complete in code; physical hot-plug validation pending
-- Milestone 3: technically implemented and ready for physical-device testing; physical-device gate not passed
-- Milestones 4-11: not started
+- Milestone 1: complete
+- Milestone 2: complete; Android physical hot-plug verified by the user
+- Milestone 3: complete; Android external UVC live preview verified by the user
+- Milestone 4: camera rotation, Fit/Fill, fullscreen, and reconnect-safe UI controls implemented; physical control validation pending
+- Milestone 5: Android/iOS photo capture and system Gallery/Photos publication implemented; physical validation pending
+- Milestone 6: Android/iOS video recording and system Gallery/Photos publication implemented; physical validation pending
+- Milestone 7: internal Gallery intentionally not started
+- Milestone 8: visible camera Settings/Info controls wired; full settings milestone not started
+- Milestones 9-10: Apple capability path and controls implemented in code; Xcode/hardware validation pending
+- Milestone 11: not started
 
-## Android USB/OTG fix implemented
+## Working Android USB/UVC core preserved
 
-- Confirmed that the app and UVCAndroid library do not launch Android USB Settings in the normal connection flow
-- USB Host capability check and `USB_HOST_SUPPORTED` diagnostic
-- Native `UsbManager.deviceList` enumeration on startup, resume, attach, and manual retry
-- Device-level and interface-level UVC classification for composite cameras
-- Broad class-based attach filters without vendor/product lock-in
-- App-owned attach, detach, and `com.rammy.aigun.USB_PERMISSION` broadcast handling
-- In-app CAMERA runtime permission explanation and request
-- App-owned `UsbManager.requestPermission()` flow with Android-version-appropriate mutable `PendingIntent`
-- Automatic continuation after permission; no second Connect press
-- Explicit `UsbManager.openDevice()` probe and `USB_OPEN_FAILED` stage
-- Existing native UVCAndroid/libuvc preview retained
-- MJPEG-first 1080p -> 720p -> 480p fallback, followed by uncompressed YUY2/YUV modes
-- Explicit connection state machine that prevents duplicate permission/open attempts
-- Automatic safe close on detach and automatic reconnect on the next attach
-- Copyable Settings / Diagnostics / USB screen
-- Debug-only descriptor, permission, opening, negotiation, first-frame, and timing logs
-- Android application settings link only after CAMERA runtime permission is permanently denied
+- No change to USB permission behavior
+- No change to OTG attach/detach discovery
+- No change to `UsbManager.openDevice()` verification
+- No replacement of UVCAndroid/libuvc
+- No change to negotiated-mode selection or fallback order
+- Existing `CameraHelper` and `FirstFrameTextureView` remain the camera and preview owners
+
+## Camera controls implemented
+
+- Photo from the UVC renderer, JPEG quality 95
+- Photos published to `Pictures/Rammy AI Gun` through MediaStore
+- Hardware/surface H.264 MP4 recording through the existing UVC library
+- Videos published to `Movies/Rammy AI Gun` through MediaStore
+- Recording timer, active red/stop state, duplicate-action protection, and interruption cleanup
+- 0/90/180/270 renderer rotation
+- Aspect-correct Fit/Fill
+- Fullscreen and hide/show overlays with single-tap restoration
+- Live camera Information overlay
+- Both Settings buttons wired to the existing diagnostics/settings overlay
+- Press/haptic/shutter feedback and short state confirmations
+- Apple AVFoundation photo/video/transform equivalents where external cameras are exposed
+- Gallery button intentionally left visible but disabled
+
+Full implementation and physical test details: `CAMERA_CONTROLS.md`.
 
 ## Verification
 
+- Android `compileDebugKotlin`: **passed** (2026-08-12)
 - Android `testDebugUnitTest`: **passed** (2026-08-12)
 - Android `assembleDebug`: **passed** (2026-08-12)
-- Merged manifest audit: **passed**
+- Android merged-manifest audit: only legacy `WRITE_EXTERNAL_STORAGE` with `maxSdkVersion=28`; no modern broad storage/read-media permission
 - Debug APK: `android/app/build/outputs/apk/debug/app-debug.apk`
-- Physical UVC preview: **not tested**
-- Physical procedure: `docs/ANDROID_USB_PHYSICAL_TEST.md`
-- iOS build and hardware capability: **not tested** (Xcode is unavailable in this Windows workspace)
+- Working physical Android UVC preview: **confirmed by user before this controls task**
+- Physical photo/video/control validation: **pending**
+- iOS build and hardware validation: **pending** (Xcode unavailable in this Windows workspace)
 
-## Deliberately not implemented in this task
+## Intentionally unfinished
 
-Photo capture, video recording, gallery, visual redesign, ads, iOS changes, and unrelated settings remain behind the real-camera preview validation gate.
+- Internal Gallery screen
+- Visible mirror/vertical-flip buttons (none exist in the supplied screen)
+- Recording audio
+- Full settings milestone beyond the already-visible diagnostics/settings overlay
+- Release signing and Play Console upload
