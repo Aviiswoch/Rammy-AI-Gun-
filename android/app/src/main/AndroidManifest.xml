@@ -13,11 +13,16 @@
     <!-- Requested only after an external UVC camera is detected. -->
     <uses-permission android:name="android.permission.CAMERA" />
 
+    <!-- Android 9 and lower require this only when the user creates a photo/video. -->
+    <uses-permission
+        android:name="android.permission.WRITE_EXTERNAL_STORAGE"
+        android:maxSdkVersion="28"
+        tools:node="replace" />
+
     <!-- Remove unrelated legacy capture/storage declarations contributed by the UVC AAR. -->
     <uses-permission android:name="android.permission.RECORD_AUDIO" tools:node="remove" />
     <uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE" tools:node="remove" />
     <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" tools:node="remove" />
-    <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" tools:node="remove" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" tools:node="remove" />
 
     <application

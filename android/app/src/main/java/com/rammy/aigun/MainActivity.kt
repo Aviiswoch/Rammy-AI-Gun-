@@ -44,4 +44,9 @@ class MainActivity : ComponentActivity() {
         super.onResume()
         viewModel.rescan()
     }
+
+    override fun onStop() {
+        viewModel.onAppBackgrounded()
+        super.onStop()
+    }
 }

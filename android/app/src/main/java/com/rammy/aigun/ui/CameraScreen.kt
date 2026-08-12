@@ -8,6 +8,7 @@ import android.content.Context
 import android.content.Intent
 import android.content.res.Configuration
 import android.net.Uri
+import android.os.Build
 import android.provider.Settings
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -16,6 +17,7 @@ import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -43,6 +45,7 @@ import androidx.compose.material.icons.rounded.PhotoCamera
 import androidx.compose.material.icons.rounded.Refresh
 import androidx.compose.material.icons.rounded.ScreenRotation
 import androidx.compose.material.icons.rounded.Settings
+import androidx.compose.material.icons.rounded.Stop
 import androidx.compose.material.icons.rounded.Usb
 import androidx.compose.material.icons.rounded.VisibilityOff
 import androidx.compose.material3.Button
@@ -55,9 +58,11 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -67,27 +72,47 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.ui.window.Dialog
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.core.content.ContextCompat
+import com.rammy.aigun.BuildConfig
+import com.rammy.aigun.camera.CameraControlsState
 import com.rammy.aigun.camera.CameraConnectionState
+import com.rammy.aigun.camera.CameraUiEvent
 import com.rammy.aigun.camera.CameraViewModel
 import com.rammy.aigun.camera.FirstFrameTextureView
+import com.rammy.aigun.camera.PreviewDisplayMode
+import com.rammy.aigun.camera.RecordingState
 import com.rammy.aigun.camera.UsbDiagnostics
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 
 @Composable
 fun CameraScreen(viewModel: CameraViewModel) {
     val state by viewModel.state.collectAsStateWithLifecycle()
     val diagnostics by viewModel.diagnostics.collectAsStateWithLifecycle()
+    val controls by viewModel.controls.collectAsStateWithLifecycle()
     val context = LocalContext.current
+    val haptics = LocalHapticFeedback.current
+    val scope = rememberCoroutineScope()
     var previewView by remember { mutableStateOf<FirstFrameTextureView?>(null) }
     var showUsbDiagnostics by remember { mutableStateOf(false) }
+    var showInfo by remember { mutableStateOf(false) }
+    var controlsVisible by rememberSaveable { mutableStateOf(true) }
+    var fullScreen by rememberSaveable { mutableStateOf(false) }
+    var transientMessage by remember { mutableStateOf<String?>(null) }
+    var messageGeneration by remember { mutableStateOf(0) }
+    var shutterVisible by remember { mutableStateOf(false) }
     var cameraPermissionRequested by rememberSaveable { mutableStateOf(false) }
+    var pendingLegacyMediaAction by remember { mutableStateOf<PendingMediaAction?>(null) }
     val isStreaming = state is CameraConnectionState.Streaming
     val cameraPermissionLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestPermission(),
@@ -95,6 +120,65 @@ fun CameraScreen(viewModel: CameraViewModel) {
         val permanentlyDenied = !granted && cameraPermissionRequested &&
             (context as? Activity)?.shouldShowRequestPermissionRationale(Manifest.permission.CAMERA) == false
         viewModel.onCameraPermissionResult(granted, permanentlyDenied)
+    }
+    val storagePermissionLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission(),
+    ) { granted ->
+        val action = pendingLegacyMediaAction
+        pendingLegacyMediaAction = null
+        if (granted) {
+            when (action) {
+                PendingMediaAction.Photo -> viewModel.takePhoto()
+                PendingMediaAction.Record -> viewModel.toggleRecording()
+                null -> Unit
+            }
+        } else {
+            val generation = ++messageGeneration
+            transientMessage = "Storage access is required on this Android version"
+            scope.launch {
+                delay(1_600)
+                if (messageGeneration == generation) transientMessage = null
+            }
+        }
+    }
+
+    fun runMediaAction(action: PendingMediaAction) {
+        val needsLegacyPermission = Build.VERSION.SDK_INT <= Build.VERSION_CODES.P &&
+            ContextCompat.checkSelfPermission(
+                context,
+                Manifest.permission.WRITE_EXTERNAL_STORAGE,
+            ) != android.content.pm.PackageManager.PERMISSION_GRANTED
+        if (needsLegacyPermission) {
+            pendingLegacyMediaAction = action
+            storagePermissionLauncher.launch(Manifest.permission.WRITE_EXTERNAL_STORAGE)
+        } else {
+            when (action) {
+                PendingMediaAction.Photo -> viewModel.takePhoto()
+                PendingMediaAction.Record -> viewModel.toggleRecording()
+            }
+        }
+    }
+
+    LaunchedEffect(viewModel) {
+        viewModel.events.collect { event ->
+            when (event) {
+                is CameraUiEvent.Message -> {
+                    val generation = ++messageGeneration
+                    transientMessage = event.text
+                    launch {
+                        delay(1_600)
+                        if (messageGeneration == generation) transientMessage = null
+                    }
+                }
+                CameraUiEvent.Shutter -> {
+                    shutterVisible = true
+                    launch {
+                        delay(110)
+                        shutterVisible = false
+                    }
+                }
+            }
+        }
     }
 
     DisposableEffect(Unit) {
@@ -115,6 +199,17 @@ fun CameraScreen(viewModel: CameraViewModel) {
             },
             modifier = Modifier.fillMaxSize(),
         )
+
+        if (isStreaming && !controlsVisible) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .clickable {
+                        controlsVisible = true
+                        fullScreen = false
+                    },
+            )
+        }
 
         if (!isStreaming) {
             Box(
@@ -147,7 +242,64 @@ fun CameraScreen(viewModel: CameraViewModel) {
             )
         }
 
-        MonitorChrome(state = state, onSettings = { showUsbDiagnostics = true })
+        if (controlsVisible || !isStreaming) {
+            MonitorChrome(
+                state = state,
+                controls = controls,
+                onInfo = { showInfo = true },
+                onRotate = {
+                    haptics.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                    viewModel.rotatePreviewClockwise()
+                },
+                onDisplayMode = viewModel::toggleDisplayMode,
+                onFullScreen = {
+                    fullScreen = !fullScreen
+                    controlsVisible = !fullScreen
+                },
+                onHideControls = { controlsVisible = false },
+                onPhoto = {
+                    haptics.performHapticFeedback(HapticFeedbackType.LongPress)
+                    runMediaAction(PendingMediaAction.Photo)
+                },
+                onRecord = {
+                    haptics.performHapticFeedback(HapticFeedbackType.LongPress)
+                    runMediaAction(PendingMediaAction.Record)
+                },
+                onSettings = { showUsbDiagnostics = true },
+            )
+        }
+
+        AnimatedVisibility(
+            visible = transientMessage != null,
+            enter = fadeIn(),
+            exit = fadeOut(),
+            modifier = Modifier.align(Alignment.Center),
+        ) {
+            GlassPanel {
+                Text(transientMessage.orEmpty(), fontSize = 13.sp)
+            }
+        }
+
+        AnimatedVisibility(
+            visible = shutterVisible,
+            enter = fadeIn(),
+            exit = fadeOut(),
+        ) {
+            Box(
+                Modifier
+                    .fillMaxSize()
+                    .background(Color.White.copy(alpha = 0.16f)),
+            )
+        }
+    }
+
+    if (showInfo) {
+        CameraInfoDialog(
+            state = state,
+            diagnostics = diagnostics,
+            controls = controls,
+            onDismiss = { showInfo = false },
+        )
     }
 
     if (showUsbDiagnostics) {
@@ -158,8 +310,21 @@ fun CameraScreen(viewModel: CameraViewModel) {
     }
 }
 
+private enum class PendingMediaAction { Photo, Record }
+
 @Composable
-private fun MonitorChrome(state: CameraConnectionState, onSettings: () -> Unit) {
+private fun MonitorChrome(
+    state: CameraConnectionState,
+    controls: CameraControlsState,
+    onInfo: () -> Unit,
+    onRotate: () -> Unit,
+    onDisplayMode: () -> Unit,
+    onFullScreen: () -> Unit,
+    onHideControls: () -> Unit,
+    onPhoto: () -> Unit,
+    onRecord: () -> Unit,
+    onSettings: () -> Unit,
+) {
     val isStreaming = state is CameraConnectionState.Streaming
     val isPortrait = LocalConfiguration.current.orientation == Configuration.ORIENTATION_PORTRAIT
 
@@ -196,11 +361,19 @@ private fun MonitorChrome(state: CameraConnectionState, onSettings: () -> Unit) 
             GlassPanel {
                 Row {
                     if (isStreaming) {
-                        MonitorTool(Icons.Rounded.Info, "Info")
-                        MonitorTool(Icons.Rounded.ScreenRotation, "Rotate")
-                        MonitorTool(Icons.Rounded.AspectRatio, "Fit")
-                        MonitorTool(Icons.Rounded.Fullscreen, "Full screen")
-                        MonitorTool(Icons.Rounded.VisibilityOff, "Hide controls")
+                        MonitorTool(Icons.Rounded.Info, "Info", onInfo)
+                        MonitorTool(
+                            Icons.Rounded.ScreenRotation,
+                            "Rotate ${controls.transform.rotationDegrees} degrees",
+                            onRotate,
+                        )
+                        MonitorTool(
+                            Icons.Rounded.AspectRatio,
+                            controls.transform.displayMode.name,
+                            onDisplayMode,
+                        )
+                        MonitorTool(Icons.Rounded.Fullscreen, "Full screen", onFullScreen)
+                        MonitorTool(Icons.Rounded.VisibilityOff, "Hide controls", onHideControls)
                     }
                     IconButton(onClick = onSettings, modifier = Modifier.size(36.dp)) {
                         Icon(
@@ -229,12 +402,46 @@ private fun MonitorChrome(state: CameraConnectionState, onSettings: () -> Unit) 
             }
         }
 
-        if (isStreaming) BottomControls(onSettings) else Spacer(Modifier.height(48.dp))
+        if (isStreaming) {
+            BottomControls(
+                controls = controls,
+                onPhoto = onPhoto,
+                onRecord = onRecord,
+                onSettings = onSettings,
+            )
+        } else {
+            Spacer(Modifier.height(48.dp))
+        }
     }
 }
 
 @Composable
-private fun BottomControls(onSettings: () -> Unit) {
+private fun BottomControls(
+    controls: CameraControlsState,
+    onPhoto: () -> Unit,
+    onRecord: () -> Unit,
+    onSettings: () -> Unit,
+) {
+    var elapsedSeconds by remember { mutableStateOf(0L) }
+    val recording = controls.recording
+    LaunchedEffect(recording) {
+        val active = recording as? RecordingState.Recording ?: run {
+            elapsedSeconds = 0L
+            return@LaunchedEffect
+        }
+        while (true) {
+            elapsedSeconds = (android.os.SystemClock.elapsedRealtime() - active.startedAtElapsedMs) / 1_000L
+            delay(250)
+        }
+    }
+    val recordingLabel = when (recording) {
+        RecordingState.Idle -> "Record"
+        RecordingState.Starting -> "Starting"
+        is RecordingState.Recording -> formatElapsed(elapsedSeconds)
+        RecordingState.Stopping -> "Saving"
+    }
+    val isRecordingActive = recording is RecordingState.Recording || recording == RecordingState.Stopping
+
     GlassPanel(modifier = Modifier.fillMaxWidth()) {
         Row(
             modifier = Modifier.fillMaxWidth(),
@@ -242,12 +449,28 @@ private fun BottomControls(onSettings: () -> Unit) {
             verticalAlignment = Alignment.CenterVertically,
         ) {
             DisabledAction(Icons.Rounded.Collections, "Gallery")
-            DisabledAction(Icons.Rounded.PhotoCamera, "Photo", prominent = true)
-            DisabledAction(Icons.Rounded.FiberManualRecord, "Record", record = true)
+            CameraAction(
+                icon = Icons.Rounded.PhotoCamera,
+                label = if (controls.photoCaptureInProgress) "Saving" else "Photo",
+                onClick = onPhoto,
+                enabled = !controls.photoCaptureInProgress,
+                prominent = true,
+            )
+            CameraAction(
+                icon = if (isRecordingActive) Icons.Rounded.Stop else Icons.Rounded.FiberManualRecord,
+                label = recordingLabel,
+                onClick = onRecord,
+                enabled = recording == RecordingState.Idle || recording is RecordingState.Recording,
+                record = true,
+                active = isRecordingActive,
+            )
             EnabledAction(Icons.Rounded.Settings, "Settings", onSettings)
         }
     }
 }
+
+private fun formatElapsed(totalSeconds: Long): String =
+    "%02d:%02d".format(totalSeconds / 60L, totalSeconds % 60L)
 
 @Composable
 private fun ConnectionOverlay(
@@ -464,6 +687,72 @@ private fun UsbDiagnosticsDialog(diagnostics: UsbDiagnostics, onDismiss: () -> U
 }
 
 @Composable
+private fun CameraInfoDialog(
+    state: CameraConnectionState,
+    diagnostics: UsbDiagnostics,
+    controls: CameraControlsState,
+    onDismiss: () -> Unit,
+) {
+    val stream = (state as? CameraConnectionState.Streaming)?.stream
+    val recordingLabel = when (controls.recording) {
+        RecordingState.Idle -> "Idle"
+        RecordingState.Starting -> "Starting"
+        is RecordingState.Recording -> "Recording"
+        RecordingState.Stopping -> "Saving"
+    }
+    Dialog(onDismissRequest = onDismiss) {
+        Surface(
+            color = Color(0xEE111719),
+            contentColor = Color.White,
+            shape = RoundedCornerShape(20.dp),
+            modifier = Modifier.fillMaxWidth(),
+        ) {
+            Column(modifier = Modifier.padding(20.dp)) {
+                Text("Camera information", fontSize = 17.sp, fontWeight = FontWeight.SemiBold)
+                Spacer(Modifier.height(14.dp))
+                InfoLine("Camera connected", if (stream != null) "Yes" else "No")
+                InfoLine("Camera", stream?.device?.name ?: "Not connected")
+                InfoLine("Vendor ID", stream?.device?.vendorId?.toString() ?: "N/A")
+                InfoLine("Product ID", stream?.device?.productId?.toString() ?: "N/A")
+                InfoLine(
+                    "Resolution",
+                    stream?.let { "${it.width} × ${it.height}" } ?: diagnostics.resolution,
+                )
+                InfoLine("FPS", stream?.fps?.toString() ?: diagnostics.fps)
+                InfoLine("Stream", stream?.format ?: diagnostics.format)
+                InfoLine("View rotation", "${controls.transform.rotationDegrees}°")
+                InfoLine("Display", controls.transform.displayMode.name)
+                InfoLine("Recording", recordingLabel)
+                InfoLine("App", "Rammy AI Gun")
+                InfoLine("Version", BuildConfig.VERSION_NAME)
+                Spacer(Modifier.height(14.dp))
+                Button(
+                    onClick = onDismiss,
+                    colors = ButtonDefaults.buttonColors(containerColor = ElectricCyan),
+                    modifier = Modifier.align(Alignment.End),
+                ) {
+                    Text("Close")
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun InfoLine(label: String, value: String) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 4.dp),
+        horizontalArrangement = Arrangement.SpaceBetween,
+    ) {
+        Text(label, color = Color.White.copy(alpha = 0.58f), fontSize = 12.sp)
+        Spacer(Modifier.width(20.dp))
+        Text(value, color = Color.White, fontSize = 12.sp, textAlign = TextAlign.End)
+    }
+}
+
+@Composable
 private fun GlassPanel(modifier: Modifier = Modifier, content: @Composable () -> Unit) {
     Surface(
         modifier = modifier,
@@ -479,14 +768,57 @@ private fun GlassPanel(modifier: Modifier = Modifier, content: @Composable () ->
 }
 
 @Composable
-private fun MonitorTool(icon: ImageVector, description: String) {
-    IconButton(onClick = {}, enabled = false, modifier = Modifier.size(36.dp)) {
+private fun MonitorTool(icon: ImageVector, description: String, onClick: () -> Unit) {
+    IconButton(onClick = onClick, modifier = Modifier.size(36.dp)) {
         Icon(
             icon,
             description,
-            tint = Color.White.copy(alpha = 0.62f),
+            tint = Color.White,
             modifier = Modifier.size(18.dp),
         )
+    }
+}
+
+@Composable
+private fun CameraAction(
+    icon: ImageVector,
+    label: String,
+    onClick: () -> Unit,
+    enabled: Boolean,
+    prominent: Boolean = false,
+    record: Boolean = false,
+    active: Boolean = false,
+) {
+    Column(
+        modifier = Modifier.alpha(if (enabled) 1f else 0.48f),
+        horizontalAlignment = Alignment.CenterHorizontally,
+    ) {
+        Surface(
+            modifier = Modifier.size(if (prominent) 52.dp else 44.dp),
+            shape = CircleShape,
+            color = when {
+                prominent -> Color.White
+                record && active -> MaterialTheme.colorScheme.error.copy(alpha = 0.72f)
+                record -> MaterialTheme.colorScheme.error.copy(alpha = 0.22f)
+                else -> Color.White.copy(alpha = 0.08f)
+            },
+        ) {
+            IconButton(onClick = onClick, enabled = enabled) {
+                Icon(
+                    icon,
+                    label,
+                    tint = when {
+                        prominent -> MonitorBlack
+                        record && active -> Color.White
+                        record -> MaterialTheme.colorScheme.error
+                        else -> Color.White
+                    },
+                    modifier = Modifier.size(22.dp),
+                )
+            }
+        }
+        Spacer(Modifier.height(5.dp))
+        Text(label, fontSize = 10.sp, color = Color.White.copy(alpha = 0.82f))
     }
 }
 
