@@ -39,5 +39,9 @@ class MainActivity : ComponentActivity() {
         setIntent(intent)
         viewModel.rescan()
     }
-}
 
+    override fun onResume() {
+        super.onResume()
+        viewModel.rescan()
+    }
+}

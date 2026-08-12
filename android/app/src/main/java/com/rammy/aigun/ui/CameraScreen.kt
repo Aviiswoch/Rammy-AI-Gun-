@@ -1,6 +1,17 @@
 package com.rammy.aigun.ui
 
+import android.Manifest
+import android.app.Activity
+import android.content.ClipData
+import android.content.ClipboardManager
+import android.content.Context
+import android.content.Intent
 import android.content.res.Configuration
+import android.net.Uri
+import android.provider.Settings
+import android.widget.Toast
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
@@ -18,8 +29,10 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.AspectRatio
 import androidx.compose.material.icons.rounded.Collections
@@ -45,6 +58,7 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -52,21 +66,36 @@ import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
+import androidx.compose.ui.window.Dialog
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.rammy.aigun.camera.CameraConnectionState
 import com.rammy.aigun.camera.CameraViewModel
 import com.rammy.aigun.camera.FirstFrameTextureView
+import com.rammy.aigun.camera.UsbDiagnostics
 
 @Composable
 fun CameraScreen(viewModel: CameraViewModel) {
     val state by viewModel.state.collectAsStateWithLifecycle()
+    val diagnostics by viewModel.diagnostics.collectAsStateWithLifecycle()
+    val context = LocalContext.current
     var previewView by remember { mutableStateOf<FirstFrameTextureView?>(null) }
+    var showUsbDiagnostics by remember { mutableStateOf(false) }
+    var cameraPermissionRequested by rememberSaveable { mutableStateOf(false) }
     val isStreaming = state is CameraConnectionState.Streaming
+    val cameraPermissionLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission(),
+    ) { granted ->
+        val permanentlyDenied = !granted && cameraPermissionRequested &&
+            (context as? Activity)?.shouldShowRequestPermissionRationale(Manifest.permission.CAMERA) == false
+        viewModel.onCameraPermissionResult(granted, permanentlyDenied)
+    }
 
     DisposableEffect(Unit) {
         onDispose { previewView?.let(viewModel::detachPreviewView) }
@@ -95,17 +124,42 @@ fun CameraScreen(viewModel: CameraViewModel) {
             )
             ConnectionOverlay(
                 state = state,
-                onAllow = viewModel::allowAndConnect,
+                onAllow = {
+                    when (state) {
+                        is CameraConnectionState.CameraPermissionRequired,
+                        is CameraConnectionState.CameraPermissionDenied,
+                        -> {
+                            cameraPermissionRequested = true
+                            cameraPermissionLauncher.launch(Manifest.permission.CAMERA)
+                        }
+                        else -> viewModel.allowAndConnect()
+                    }
+                },
                 onRetry = viewModel::retry,
+                onOpenSettings = {
+                    context.startActivity(
+                        Intent(
+                            Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                            Uri.parse("package:${context.packageName}"),
+                        ),
+                    )
+                },
             )
         }
 
-        MonitorChrome(state = state)
+        MonitorChrome(state = state, onSettings = { showUsbDiagnostics = true })
+    }
+
+    if (showUsbDiagnostics) {
+        UsbDiagnosticsDialog(
+            diagnostics = diagnostics,
+            onDismiss = { showUsbDiagnostics = false },
+        )
     }
 }
 
 @Composable
-private fun MonitorChrome(state: CameraConnectionState) {
+private fun MonitorChrome(state: CameraConnectionState, onSettings: () -> Unit) {
     val isStreaming = state is CameraConnectionState.Streaming
     val isPortrait = LocalConfiguration.current.orientation == Configuration.ORIENTATION_PORTRAIT
 
@@ -130,18 +184,31 @@ private fun MonitorChrome(state: CameraConnectionState) {
                             .background(if (isStreaming) ElectricCyan else Color(0xFF586064), CircleShape),
                     )
                     Spacer(Modifier.width(9.dp))
-                    Text("RAMMY AI GUN", fontSize = 12.sp, fontWeight = FontWeight.SemiBold, letterSpacing = 1.5.sp)
+                    Text(
+                        "RAMMY AI GUN",
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        letterSpacing = 1.5.sp,
+                    )
                 }
             }
 
-            if (isStreaming) {
-                GlassPanel {
-                    Row {
+            GlassPanel {
+                Row {
+                    if (isStreaming) {
                         MonitorTool(Icons.Rounded.Info, "Info")
                         MonitorTool(Icons.Rounded.ScreenRotation, "Rotate")
                         MonitorTool(Icons.Rounded.AspectRatio, "Fit")
                         MonitorTool(Icons.Rounded.Fullscreen, "Full screen")
                         MonitorTool(Icons.Rounded.VisibilityOff, "Hide controls")
+                    }
+                    IconButton(onClick = onSettings, modifier = Modifier.size(36.dp)) {
+                        Icon(
+                            Icons.Rounded.Settings,
+                            "Settings and USB diagnostics",
+                            tint = Color.White,
+                            modifier = Modifier.size(18.dp),
+                        )
                     }
                 }
             }
@@ -154,20 +221,20 @@ private fun MonitorChrome(state: CameraConnectionState) {
             modifier = Modifier.align(Alignment.CenterHorizontally),
         ) {
             GlassPanel {
-                Text("Rotate your phone for full view", color = Color.White.copy(alpha = 0.72f), fontSize = 12.sp)
+                Text(
+                    "Rotate your phone for full view",
+                    color = Color.White.copy(alpha = 0.72f),
+                    fontSize = 12.sp,
+                )
             }
         }
 
-        if (isStreaming) {
-            BottomControls()
-        } else {
-            Spacer(Modifier.height(48.dp))
-        }
+        if (isStreaming) BottomControls(onSettings) else Spacer(Modifier.height(48.dp))
     }
 }
 
 @Composable
-private fun BottomControls() {
+private fun BottomControls(onSettings: () -> Unit) {
     GlassPanel(modifier = Modifier.fillMaxWidth()) {
         Row(
             modifier = Modifier.fillMaxWidth(),
@@ -177,7 +244,7 @@ private fun BottomControls() {
             DisabledAction(Icons.Rounded.Collections, "Gallery")
             DisabledAction(Icons.Rounded.PhotoCamera, "Photo", prominent = true)
             DisabledAction(Icons.Rounded.FiberManualRecord, "Record", record = true)
-            DisabledAction(Icons.Rounded.Settings, "Settings")
+            EnabledAction(Icons.Rounded.Settings, "Settings", onSettings)
         }
     }
 }
@@ -187,6 +254,7 @@ private fun ConnectionOverlay(
     state: CameraConnectionState,
     onAllow: () -> Unit,
     onRetry: () -> Unit,
+    onOpenSettings: () -> Unit,
 ) {
     val title: String
     val detail: String
@@ -198,49 +266,87 @@ private fun ConnectionOverlay(
     when (state) {
         CameraConnectionState.Starting -> {
             title = "Preparing camera"
-            detail = "Checking USB host support…"
+            detail = "Checking USB host support..."
             icon = Icons.Rounded.Usb
             spinning = true
         }
         CameraConnectionState.UsbHostUnavailable -> {
-            title = "USB camera is not supported"
-            detail = "This device does not expose Android USB host mode."
+            title = "USB host mode is not supported by this device."
+            detail = "A compatible Android USB Host device is required."
             icon = Icons.Rounded.Usb
             spinning = false
         }
-        CameraConnectionState.Waiting -> {
+        CameraConnectionState.WaitingForDevice -> {
             title = "Connect your USB camera"
             detail = "Rammy AI Gun will connect automatically."
             icon = Icons.Rounded.Usb
             spinning = false
         }
-        is CameraConnectionState.Detected -> {
-            title = "USB Camera detected"
-            detail = "Rammy AI Gun needs USB access to display the external camera connected to your phone."
+        is CameraConnectionState.DeviceDetected -> {
+            title = "USB camera detected"
+            detail = "Preparing the permission request..."
+            icon = Icons.Rounded.Usb
+            spinning = true
+        }
+        is CameraConnectionState.CameraPermissionRequired -> {
+            title = "USB camera detected"
+            detail = "Rammy AI Gun needs camera/USB access to display the external camera connected to your phone."
             icon = Icons.Rounded.Usb
             spinning = false
             button = "Allow & Connect"
             action = onAllow
         }
-        is CameraConnectionState.Connecting -> {
-            title = "Connecting camera…"
+        is CameraConnectionState.CameraPermissionDenied -> {
+            title = "Camera access is required"
+            detail = "Camera access is required to display your USB camera."
+            icon = Icons.Rounded.Usb
+            spinning = false
+            button = if (state.permanentlyDenied) "Open Settings" else "Allow & Connect"
+            action = if (state.permanentlyDenied) onOpenSettings else onAllow
+        }
+        is CameraConnectionState.UsbPermissionRequired -> {
+            title = "Allow USB camera access"
+            detail = "Waiting for the Android USB permission response."
+            icon = Icons.Rounded.Usb
+            spinning = true
+        }
+        is CameraConnectionState.OpeningDevice -> {
+            title = "Connecting camera..."
             detail = state.device.name
+            icon = Icons.Rounded.Usb
+            spinning = true
+        }
+        is CameraConnectionState.NegotiatingStream -> {
+            title = "Starting live view..."
+            detail = "Negotiating a supported low-latency UVC stream."
             icon = Icons.Rounded.Usb
             spinning = true
         }
         CameraConnectionState.Disconnected -> {
             title = "Camera disconnected"
-            detail = "Waiting for camera…"
+            detail = "Waiting for camera..."
             icon = Icons.Rounded.Usb
             spinning = true
         }
-        is CameraConnectionState.PermissionDenied -> {
-            title = "Camera access is required"
-            detail = "USB access is required to display your camera."
+        is CameraConnectionState.UsbPermissionDenied -> {
+            title = "USB camera permission is required"
+            detail = "USB camera permission is required to display the external camera."
             icon = Icons.Rounded.Usb
             spinning = false
-            button = "Try again"
+            button = "Allow & Connect"
             action = onAllow
+        }
+        is CameraConnectionState.NoDeviceEnumerated -> {
+            title = "USB camera could not be detected"
+            detail = if (state.connectedDeviceCount == 0) {
+                "No USB camera was enumerated. Check that your adapter supports OTG/USB Host mode and that the camera has enough power."
+            } else {
+                "A USB device was found, but it does not expose a standard UVC video interface."
+            }
+            icon = Icons.Rounded.Usb
+            spinning = false
+            button = "Check again"
+            action = onRetry
         }
         is CameraConnectionState.Error -> {
             title = "Camera could not start"
@@ -283,7 +389,11 @@ private fun ConnectionOverlay(
         )
         if (spinning) {
             Spacer(Modifier.height(24.dp))
-            CircularProgressIndicator(modifier = Modifier.size(22.dp), strokeWidth = 2.dp, color = ElectricCyan)
+            CircularProgressIndicator(
+                modifier = Modifier.size(22.dp),
+                strokeWidth = 2.dp,
+                color = ElectricCyan,
+            )
         }
         if (button != null && action != null) {
             Spacer(Modifier.height(24.dp))
@@ -293,6 +403,61 @@ private fun ConnectionOverlay(
                 shape = RoundedCornerShape(14.dp),
             ) {
                 Text(button, modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp))
+            }
+        }
+    }
+}
+
+@Composable
+private fun UsbDiagnosticsDialog(diagnostics: UsbDiagnostics, onDismiss: () -> Unit) {
+    val context = LocalContext.current
+    Dialog(onDismissRequest = onDismiss) {
+        Surface(
+            color = Color(0xFF111719),
+            contentColor = Color.White,
+            shape = RoundedCornerShape(20.dp),
+            modifier = Modifier.fillMaxWidth(),
+        ) {
+            Column(modifier = Modifier.padding(20.dp)) {
+                Text("Settings / Diagnostics / USB", fontSize = 17.sp, fontWeight = FontWeight.SemiBold)
+                Spacer(Modifier.height(14.dp))
+                Text(
+                    diagnostics.asText(),
+                    color = Color.White.copy(alpha = 0.78f),
+                    fontFamily = FontFamily.Monospace,
+                    fontSize = 11.sp,
+                    lineHeight = 17.sp,
+                    modifier = Modifier
+                        .height(360.dp)
+                        .verticalScroll(rememberScrollState()),
+                )
+                Spacer(Modifier.height(16.dp))
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                ) {
+                    Button(
+                        onClick = {
+                            val clipboard =
+                                context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                            clipboard.setPrimaryClip(
+                                ClipData.newPlainText("Rammy USB diagnostics", diagnostics.asText()),
+                            )
+                            Toast.makeText(context, "Diagnostics copied", Toast.LENGTH_SHORT).show()
+                        },
+                        colors = ButtonDefaults.buttonColors(containerColor = ElectricCyan),
+                    ) {
+                        Text("Copy diagnostics")
+                    }
+                    Button(
+                        onClick = onDismiss,
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = Color.White.copy(alpha = 0.10f),
+                        ),
+                    ) {
+                        Text("Close", color = Color.White)
+                    }
+                }
             }
         }
     }
@@ -316,12 +481,22 @@ private fun GlassPanel(modifier: Modifier = Modifier, content: @Composable () ->
 @Composable
 private fun MonitorTool(icon: ImageVector, description: String) {
     IconButton(onClick = {}, enabled = false, modifier = Modifier.size(36.dp)) {
-        Icon(icon, description, tint = Color.White.copy(alpha = 0.62f), modifier = Modifier.size(18.dp))
+        Icon(
+            icon,
+            description,
+            tint = Color.White.copy(alpha = 0.62f),
+            modifier = Modifier.size(18.dp),
+        )
     }
 }
 
 @Composable
-private fun DisabledAction(icon: ImageVector, label: String, prominent: Boolean = false, record: Boolean = false) {
+private fun DisabledAction(
+    icon: ImageVector,
+    label: String,
+    prominent: Boolean = false,
+    record: Boolean = false,
+) {
     Column(
         modifier = Modifier.alpha(0.48f),
         horizontalAlignment = Alignment.CenterHorizontally,
@@ -353,3 +528,13 @@ private fun DisabledAction(icon: ImageVector, label: String, prominent: Boolean 
     }
 }
 
+@Composable
+private fun EnabledAction(icon: ImageVector, label: String, onClick: () -> Unit) {
+    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+        IconButton(onClick = onClick, modifier = Modifier.size(44.dp)) {
+            Icon(icon, label, tint = Color.White, modifier = Modifier.size(22.dp))
+        }
+        Spacer(Modifier.height(5.dp))
+        Text(label, fontSize = 10.sp, color = Color.White.copy(alpha = 0.82f))
+    }
+}

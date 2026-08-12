@@ -10,8 +10,10 @@
         android:name="android.hardware.camera.any"
         android:required="false" />
 
-    <!-- Remove legacy capture/storage declarations contributed by the UVC AAR. -->
-    <uses-permission android:name="android.permission.CAMERA" tools:node="remove" />
+    <!-- Requested only after an external UVC camera is detected. -->
+    <uses-permission android:name="android.permission.CAMERA" />
+
+    <!-- Remove unrelated legacy capture/storage declarations contributed by the UVC AAR. -->
     <uses-permission android:name="android.permission.RECORD_AUDIO" tools:node="remove" />
     <uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE" tools:node="remove" />
     <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" tools:node="remove" />
