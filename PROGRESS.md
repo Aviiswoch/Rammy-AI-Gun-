@@ -2,6 +2,20 @@
 
 Last updated: 2026-08-13
 
+## UVC artifact diagnostic inspection
+
+- Diagnosed the full UVCAndroid 1.0.13 USB packet -> native frame assembly -> MJPEG/YUYV decode -> shared OpenGL renderer -> preview/photo/recording path
+- Found native incomplete-frame acceptance paths (ERR/bad isochronous packet does not invalidate the frame; missing-EOF FID change publishes accumulated bytes; downstream size guard is commented out)
+- Found a conditional stale-buffer mechanism in partial YUYV conversion and a secondary ANativeWindow stride/geometry risk
+- Added debug-only negotiated-mode, endpoint, device, decoded-frame, rendered-frame, size-mismatch, buffer-object, transform, recording, and sampled color-block diagnostics
+- Added `[CORRUPT_FRAME]` logging for decoded RGBX size mismatches and sudden green/magenta block heuristics; no frame is filtered or discarded
+- Existing diagnostics can be copied; debug builds can export `Downloads/Rammy AI Gun/uvc-diagnostics.txt`
+- Raw UVC packet/FID/EOF/ERR, compressed MJPEG, decoder-failure, and native USB transfer counters are explicitly reported as unavailable through the binary AAR API
+- Debug unit tests, debug APK build, and release Kotlin compilation: **passed**
+- No physical device was connected; Android 15/16 correlation is pending
+- No USB connection, permission, mode selection, preview, media, transform, UI branding, version, or release behavior was changed
+- Full findings and two-device matrix: `UVC_ARTIFACT_INSPECTION.md`
+
 ## Installable release APK fix
 
 - Root cause confirmed: the previous `app-release-unsigned.apk` contained no signing certificate; `apksigner` reported `DOES NOT VERIFY` and `Missing META-INF/MANIFEST.MF`

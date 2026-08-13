@@ -88,12 +88,15 @@ import com.rammy.aigun.camera.CameraControlsState
 import com.rammy.aigun.camera.CameraConnectionState
 import com.rammy.aigun.camera.CameraUiEvent
 import com.rammy.aigun.camera.CameraViewModel
+import com.rammy.aigun.camera.DiagnosticTextExporter
 import com.rammy.aigun.camera.FirstFrameTextureView
 import com.rammy.aigun.camera.PreviewDisplayMode
 import com.rammy.aigun.camera.RecordingState
 import com.rammy.aigun.camera.UsbDiagnostics
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 @Composable
 fun CameraScreen(viewModel: CameraViewModel) {
@@ -634,6 +637,7 @@ private fun ConnectionOverlay(
 @Composable
 private fun UsbDiagnosticsDialog(diagnostics: UsbDiagnostics, onDismiss: () -> Unit) {
     val context = LocalContext.current
+    val scope = rememberCoroutineScope()
     Dialog(onDismissRequest = onDismiss) {
         Surface(
             color = Color(0xFF111719),
@@ -671,6 +675,32 @@ private fun UsbDiagnosticsDialog(diagnostics: UsbDiagnostics, onDismiss: () -> U
                         colors = ButtonDefaults.buttonColors(containerColor = ElectricCyan),
                     ) {
                         Text("Copy diagnostics")
+                    }
+                    if (BuildConfig.DEBUG) {
+                        Button(
+                            onClick = {
+                                scope.launch {
+                                    val result = runCatching {
+                                        withContext(Dispatchers.IO) {
+                                            DiagnosticTextExporter.export(context, diagnostics.asText())
+                                        }
+                                    }
+                                    Toast.makeText(
+                                        context,
+                                        result.fold(
+                                            onSuccess = { "Diagnostics exported: $it" },
+                                            onFailure = { it.message ?: "Diagnostics export failed" },
+                                        ),
+                                        Toast.LENGTH_LONG,
+                                    ).show()
+                                }
+                            },
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = Color.White.copy(alpha = 0.10f),
+                            ),
+                        ) {
+                            Text("Export", color = Color.White)
+                        }
                     }
                     Button(
                         onClick = onDismiss,

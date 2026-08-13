@@ -59,6 +59,7 @@ data class UsbDiagnostics(
     val format: String = "Not negotiated",
     val firstFrameReceived: Boolean = false,
     val lastFailureStage: String? = null,
+    val artifact: UvcArtifactDiagnostics = UvcArtifactDiagnostics(),
 ) {
     fun asText(): String = buildString {
         appendLine("Rammy AI Gun - USB diagnostics")
@@ -77,7 +78,9 @@ data class UsbDiagnostics(
         appendLine("FPS: $fps")
         appendLine("Format: $format")
         appendLine("First frame: ${yesNo(firstFrameReceived)}")
-        append("Last failure stage: ${lastFailureStage ?: "None"}")
+        appendLine("Last failure stage: ${lastFailureStage ?: "None"}")
+        appendLine()
+        append(artifact.asText())
     }
 
     private fun yesNo(value: Boolean) = if (value) "YES" else "NO"

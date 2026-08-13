@@ -7,6 +7,7 @@ import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
 import android.content.pm.PackageManager
+import android.hardware.usb.UsbConstants
 import android.hardware.usb.UsbDevice
 import android.hardware.usb.UsbManager
 import android.os.Build
@@ -24,7 +25,9 @@ import com.herohan.uvcapp.IImageCapture
 import com.herohan.uvcapp.VideoCapture
 import com.rammy.aigun.BuildConfig
 import com.serenegiant.opengl.renderer.MirrorMode
+import com.serenegiant.usb.IFrameCallback
 import com.serenegiant.usb.Size
+import com.serenegiant.usb.UVCCamera
 import com.serenegiant.widget.CameraViewInterface
 import java.io.OutputStream
 import java.util.concurrent.Executors
@@ -64,6 +67,17 @@ class UsbCameraController(context: Context) {
     private val mainHandler = Handler(Looper.getMainLooper())
     private val photoCaptureGuard = AtomicBoolean(false)
     private val mediaSessionLock = Any()
+    private val artifactMonitor = UvcArtifactMonitor(
+        enabled = BuildConfig.DEBUG,
+        logger = ::artifactLog,
+    )
+    private val artifactPublishRunnable = object : Runnable {
+        override fun run() {
+            if (!artifactMonitor.enabled) return
+            publishArtifactDiagnostics()
+            mainHandler.postDelayed(this, ARTIFACT_SNAPSHOT_INTERVAL_MS)
+        }
+    }
 
     private var helper: CameraHelper? = null
     private var previewView: FirstFrameTextureView? = null
@@ -168,6 +182,7 @@ class UsbCameraController(context: Context) {
             configureMediaCapture(size)
             applyRendererTransform()
             previewView?.setCameraTransform(mutableControls.value.transform)
+            startArtifactDiagnostics(device, size)
 
             val stream = ActiveStream(
                 device = device.toSummary(),
@@ -237,6 +252,7 @@ class UsbCameraController(context: Context) {
                 metric("firstFrameMs", connectionElapsed())
                 mutableDiagnostics.value = mutableDiagnostics.value.copy(firstFrameReceived = true)
             }
+            onFrameRendered = if (artifactMonitor.enabled) artifactMonitor::onRendered else null
         }
         start()
     }
@@ -246,6 +262,7 @@ class UsbCameraController(context: Context) {
         currentSurface?.let { helper?.removeSurface(it) }
         currentSurface = null
         view.onFirstFrame = null
+        view.onFrameRendered = null
         view.setCallback(null)
         previewView = null
     }
@@ -845,6 +862,7 @@ class UsbCameraController(context: Context) {
     }
 
     private fun closeCurrentCamera() {
+        stopArtifactDiagnostics()
         currentSurface?.let { helper?.removeSurface(it) }
         runCatching { helper?.stopPreview() }
         runCatching { helper?.closeCamera() }
@@ -888,6 +906,11 @@ class UsbCameraController(context: Context) {
     }
 
     private fun logDevice(device: UsbDevice) {
+        if (BuildConfig.DEBUG) {
+            artifactLog("[DEVICE] ${Build.MANUFACTURER} ${Build.MODEL}")
+            artifactLog("[ANDROID] ${Build.VERSION.RELEASE} SDK ${Build.VERSION.SDK_INT}")
+            artifactLog("[DEVICE] hardware=${Build.HARDWARE} abis=${Build.SUPPORTED_ABIS.joinToString()}")
+        }
         debug(
             "[USB] Device name=${device.deviceName} VID=${device.vendorId} PID=${device.productId} " +
                 "class=${device.deviceClass} subclass=${device.deviceSubclass} " +
@@ -900,6 +923,131 @@ class UsbCameraController(context: Context) {
                     "subclass=${usbInterface.interfaceSubclass} protocol=${usbInterface.interfaceProtocol} " +
                     "endpoints=${usbInterface.endpointCount}",
             )
+            repeat(usbInterface.endpointCount) { endpointIndex ->
+                debug("[USB] ${endpointDescription(index, endpointIndex, device)}")
+            }
+        }
+    }
+
+    private fun startArtifactDiagnostics(device: UsbDevice, size: Size?) {
+        if (!artifactMonitor.enabled || size == null) return
+        val modes = helper?.supportedSizeList.orEmpty().map(::modeDescription)
+        val endpoints = endpointDescriptions(device)
+        val selectedEndpoint = inferSelectedEndpoint(device)
+        val mode = modeDescription(size)
+        val isMjpeg = formatLabel(size) == "MJPEG"
+        artifactMonitor.configure(
+            mode = mode,
+            width = size.width,
+            height = size.height,
+            fps = size.fps,
+            isMjpeg = isMjpeg,
+            availableModes = modes,
+            endpoints = endpoints,
+            selectedEndpoint = selectedEndpoint,
+        )
+        artifactLog("[UVC] Selected format=${formatLabel(size)} type=${size.type}")
+        artifactLog("[UVC] Resolution=${size.width}x${size.height}")
+        artifactLog("[UVC] FPS=${size.fps}")
+        artifactLog("[UVC] FrameInterval100ns=${size.fps.takeIf { it > 0 }?.let { 10_000_000L / it } ?: "unknown"}")
+        artifactLog(
+            "[UVC] ExpectedRawFrameBytes=" +
+                if (isMjpeg) "variable (MJPEG)" else (size.width.toLong() * size.height * 2L),
+        )
+        artifactLog("[UVC] ExpectedDecodedRgbxBytes=${size.width.toLong() * size.height * 4L}")
+        artifactLog("[UVC] SelectedEndpoint=$selectedEndpoint")
+        modes.forEach { artifactLog("[UVC] AvailableMode=$it") }
+        endpoints.forEach { artifactLog("[USB] EndpointCandidate=$it") }
+        artifactLog(
+            "[UVC_DIAG] Raw UVC payload/FID/EOF/ERR and transfer status counters are not exposed " +
+                "by the binary UVCAndroid 1.0.13 API",
+        )
+        runCatching {
+            helper?.setFrameCallback(
+                IFrameCallback { buffer -> artifactMonitor.onDecodedRgbx(buffer, size.width, size.height) },
+                UVCCamera.PIXEL_FORMAT_RGBX,
+            )
+        }.onFailure { artifactLog("[UVC_DIAG] Unable to attach post-decode frame callback: ${it.message}") }
+        mainHandler.removeCallbacks(artifactPublishRunnable)
+        publishArtifactDiagnostics()
+        mainHandler.postDelayed(artifactPublishRunnable, ARTIFACT_SNAPSHOT_INTERVAL_MS)
+    }
+
+    private fun stopArtifactDiagnostics() {
+        if (!artifactMonitor.enabled) return
+        mainHandler.removeCallbacks(artifactPublishRunnable)
+        runCatching { helper?.setFrameCallback(null, UVCCamera.PIXEL_FORMAT_RGBX) }
+        publishArtifactDiagnostics()
+    }
+
+    private fun publishArtifactDiagnostics() {
+        if (!artifactMonitor.enabled) return
+        mutableDiagnostics.value = mutableDiagnostics.value.copy(
+            artifact = artifactMonitor.snapshot(
+                transform = mutableControls.value.transform,
+                recordingState = mutableControls.value.recording,
+            ),
+        )
+    }
+
+    private fun modeDescription(size: Size): String {
+        val rawBandwidth = if (formatLabel(size) == "MJPEG") {
+            "compressed-bandwidth=variable"
+        } else {
+            val bytesPerSecond = size.width.toLong() * size.height * 2L * size.fps.coerceAtLeast(0)
+            "raw-bandwidth=${bytesPerSecond}B/s"
+        }
+        return "${size.width}x${size.height} ${formatLabel(size)} ${size.fps}fps " +
+            "type=${size.type} fpsList=${size.fpsList.orEmpty()} $rawBandwidth"
+    }
+
+    private fun endpointDescriptions(device: UsbDevice): List<String> = buildList {
+        repeat(device.interfaceCount) { interfaceIndex ->
+            val usbInterface = device.getInterface(interfaceIndex)
+            if (
+                usbInterface.interfaceClass == UsbConstants.USB_CLASS_VIDEO &&
+                usbInterface.interfaceSubclass == UVC_VIDEO_STREAMING_SUBCLASS
+            ) {
+                repeat(usbInterface.endpointCount) { endpointIndex ->
+                    add(endpointDescription(interfaceIndex, endpointIndex, device))
+                }
+            }
+        }
+    }
+
+    private fun endpointDescription(interfaceIndex: Int, endpointIndex: Int, device: UsbDevice): String {
+        val usbInterface = device.getInterface(interfaceIndex)
+        val endpoint = usbInterface.getEndpoint(endpointIndex)
+        val type = when (endpoint.type) {
+            UsbConstants.USB_ENDPOINT_XFER_ISOC -> "ISOCHRONOUS"
+            UsbConstants.USB_ENDPOINT_XFER_BULK -> "BULK"
+            UsbConstants.USB_ENDPOINT_XFER_INT -> "INTERRUPT"
+            UsbConstants.USB_ENDPOINT_XFER_CONTROL -> "CONTROL"
+            else -> "UNKNOWN(${endpoint.type})"
+        }
+        val direction = if (endpoint.direction == UsbConstants.USB_DIR_IN) "IN" else "OUT"
+        return "interfaceIndex=$interfaceIndex interfaceId=${usbInterface.id} " +
+            "alternate=${usbInterface.alternateSetting} endpointIndex=$endpointIndex " +
+            "address=0x${endpoint.address.toString(16)} direction=$direction type=$type " +
+            "maxPacketSize=${endpoint.maxPacketSize} interval=${endpoint.interval}"
+    }
+
+    private fun inferSelectedEndpoint(device: UsbDevice): String {
+        val candidates = endpointDescriptions(device)
+        if (candidates.isEmpty()) return "No VideoStreaming endpoint exposed by Android descriptors"
+        val endpointTypes = candidates.mapNotNull { description ->
+            when {
+                "type=ISOCHRONOUS" in description -> "ISOCHRONOUS"
+                "type=BULK" in description -> "BULK"
+                else -> null
+            }
+        }.distinct()
+        return if (candidates.size == 1) {
+            "Single candidate (inferred, native confirmation unavailable): ${candidates.single()}"
+        } else if (endpointTypes.size == 1) {
+            "${endpointTypes.single()} inferred from ${candidates.size} candidates; native alt setting unavailable"
+        } else {
+            "Not exposed; ${candidates.size} endpoint candidates have types ${endpointTypes.joinToString()}"
         }
     }
 
@@ -973,6 +1121,8 @@ class UsbCameraController(context: Context) {
         const val RECORDING_I_FRAME_INTERVAL_SECONDS = 1
         const val RECORDING_START_TIMEOUT_MS = 8_000L
         const val RECORDING_FINALIZE_TIMEOUT_MS = 5_000L
+        const val ARTIFACT_SNAPSHOT_INTERVAL_MS = 1_000L
+        const val UVC_VIDEO_STREAMING_SUBCLASS = 2
 
         const val UVC_FORMAT_UNCOMPRESSED = 4
         const val UVC_FRAME_UNCOMPRESSED = 5
