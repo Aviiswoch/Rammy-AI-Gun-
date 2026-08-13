@@ -1,13 +1,42 @@
+# Gradle/Kotlin state and task outputs
 .gradle/
 .kotlin/
-.idea/
-local.properties
+**/.gradle/
+**/.kotlin/
 **/build/
+
+# Android Studio and Android native-build intermediates
+.idea/
 *.iml
+local.properties
+**/.cxx/
+**/.externalNativeBuild/
+/android/uvcandroid/obj/
+/android/uvcandroid/libs/
+captures/
+
+# Native compiler/linker outputs
+*.o
+*.obj
+*.a
+*.so
+*.d
+*.ninja
+.ninja_deps
+.ninja_log
+CMakeCache.txt
+cmake_install.cmake
+compile_commands.json
+
+# Packaged Android outputs
 *.apk
 *.aab
+
+# Apple/Xcode generated state
 *.xcuserstate
 xcuserdata/
 DerivedData/
+
+# OS/tool scratch files
 .DS_Store
 .tmp/

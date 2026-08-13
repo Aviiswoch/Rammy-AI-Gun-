@@ -959,8 +959,7 @@ class UsbCameraController(context: Context) {
         modes.forEach { artifactLog("[UVC] AvailableMode=$it") }
         endpoints.forEach { artifactLog("[USB] EndpointCandidate=$it") }
         artifactLog(
-            "[UVC_DIAG] Raw UVC payload/FID/EOF/ERR and transfer status counters are not exposed " +
-                "by the binary UVCAndroid 1.0.13 API",
+            "[UVC_DIAG] Native UVC payload/FID/EOF/ERR integrity counters enabled",
         )
         runCatching {
             helper?.setFrameCallback(
@@ -982,10 +981,26 @@ class UsbCameraController(context: Context) {
 
     private fun publishArtifactDiagnostics() {
         if (!artifactMonitor.enabled) return
+        val nativeIntegrity = runCatching {
+            NativeUvcIntegrityStats.from(UVCCamera.getIntegrityStats())
+        }.onFailure {
+            artifactLog("[UVC_DIAG] Unable to read native integrity counters: ${it.message}")
+        }.getOrDefault(NativeUvcIntegrityStats())
+        artifactLog(
+            "[UVC_NATIVE] packets=${nativeIntegrity.uvcPacketsTotal} " +
+                "packetErr=${nativeIntegrity.uvcPacketsErr} eof=${nativeIntegrity.framesCompletedWithEof} " +
+                "dropErr=${nativeIntegrity.framesDroppedErr} " +
+                "dropMissingEof=${nativeIntegrity.framesDroppedMissingEof} " +
+                "dropFid=${nativeIntegrity.framesDroppedFidTransition} " +
+                "dropSize=${nativeIntegrity.framesDroppedSizeMismatch} " +
+                "yuy2Accepted=${nativeIntegrity.rawYuy2FramesAccepted} " +
+                "yuy2Dropped=${nativeIntegrity.rawYuy2FramesDropped}",
+        )
         mutableDiagnostics.value = mutableDiagnostics.value.copy(
             artifact = artifactMonitor.snapshot(
                 transform = mutableControls.value.transform,
                 recordingState = mutableControls.value.recording,
+                nativeIntegrity = nativeIntegrity,
             ),
         )
     }

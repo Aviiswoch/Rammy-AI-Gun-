@@ -7,6 +7,32 @@ import java.nio.ByteBuffer
 import java.util.concurrent.atomic.AtomicLong
 import kotlin.math.max
 
+data class NativeUvcIntegrityStats(
+    val uvcPacketsTotal: Long = 0,
+    val uvcPacketsErr: Long = 0,
+    val framesCompletedWithEof: Long = 0,
+    val framesDroppedErr: Long = 0,
+    val framesDroppedMissingEof: Long = 0,
+    val framesDroppedFidTransition: Long = 0,
+    val framesDroppedSizeMismatch: Long = 0,
+    val rawYuy2FramesAccepted: Long = 0,
+    val rawYuy2FramesDropped: Long = 0,
+) {
+    companion object {
+        fun from(values: LongArray): NativeUvcIntegrityStats = NativeUvcIntegrityStats(
+            uvcPacketsTotal = values.getOrElse(0) { 0 },
+            uvcPacketsErr = values.getOrElse(1) { 0 },
+            framesCompletedWithEof = values.getOrElse(2) { 0 },
+            framesDroppedErr = values.getOrElse(3) { 0 },
+            framesDroppedMissingEof = values.getOrElse(4) { 0 },
+            framesDroppedFidTransition = values.getOrElse(5) { 0 },
+            framesDroppedSizeMismatch = values.getOrElse(6) { 0 },
+            rawYuy2FramesAccepted = values.getOrElse(7) { 0 },
+            rawYuy2FramesDropped = values.getOrElse(8) { 0 },
+        )
+    }
+}
+
 data class UvcArtifactDiagnostics(
     val enabled: Boolean = false,
     val manufacturer: String = Build.MANUFACTURER.orEmpty(),
@@ -15,7 +41,7 @@ data class UvcArtifactDiagnostics(
     val sdkLevel: Int = Build.VERSION.SDK_INT,
     val hardware: String = Build.HARDWARE.orEmpty(),
     val supportedAbis: String = Build.SUPPORTED_ABIS.joinToString(),
-    val library: String = "UVCAndroid 1.0.13 (binary AAR)",
+    val library: String = "UVCAndroid 1.0.13 (vendored native integrity build)",
     val currentMode: String = "Not negotiated",
     val availableModes: List<String> = emptyList(),
     val endpointCandidates: List<String> = emptyList(),
@@ -39,6 +65,7 @@ data class UvcArtifactDiagnostics(
     val lastRenderCallbackElapsedNs: Long = 0,
     val transform: String = "rotation=0, mirrorH=false, mirrorV=false, display=Fit",
     val recording: String = "Idle",
+    val nativeIntegrity: NativeUvcIntegrityStats = NativeUvcIntegrityStats(),
 ) {
     fun asText(): String = buildString {
         appendLine("UVC artifact diagnostics (debug-only): ${if (enabled) "ENABLED" else "DISABLED"}")
@@ -74,10 +101,18 @@ data class UvcArtifactDiagnostics(
         appendLine("Available modes:")
         if (availableModes.isEmpty()) appendLine("  Unavailable")
         else availableModes.forEach { appendLine("  $it") }
-        appendLine("Native packet/payload counters: UNAVAILABLE at app boundary")
-        appendLine("  uvc_packets_total, ERR/FID/EOF, incomplete/missing-EOF, transfer status")
+        appendLine("Native frame-integrity counters:")
+        appendLine("  uvcPacketsTotal: ${nativeIntegrity.uvcPacketsTotal}")
+        appendLine("  uvcPacketsErr: ${nativeIntegrity.uvcPacketsErr}")
+        appendLine("  framesCompletedWithEOF: ${nativeIntegrity.framesCompletedWithEof}")
+        appendLine("  framesDroppedErr: ${nativeIntegrity.framesDroppedErr}")
+        appendLine("  framesDroppedMissingEOF: ${nativeIntegrity.framesDroppedMissingEof}")
+        appendLine("  framesDroppedFIDTransition: ${nativeIntegrity.framesDroppedFidTransition}")
+        appendLine("  framesDroppedSizeMismatch: ${nativeIntegrity.framesDroppedSizeMismatch}")
+        appendLine("  rawYuy2FramesAccepted: ${nativeIntegrity.rawYuy2FramesAccepted}")
+        appendLine("  rawYuy2FramesDropped: ${nativeIntegrity.rawYuy2FramesDropped}")
         appendLine("Raw MJPEG validation: UNAVAILABLE; callback contains post-decode RGBX")
-        append("No suspicious frame is discarded by this instrumentation.")
+        append("Native integrity guard discards invalid raw frames before conversion/rendering.")
     }
 }
 
@@ -188,7 +223,11 @@ internal class UvcArtifactMonitor(
     }
 
     @Synchronized
-    fun snapshot(transform: CameraTransformState, recordingState: RecordingState): UvcArtifactDiagnostics {
+    fun snapshot(
+        transform: CameraTransformState,
+        recordingState: RecordingState,
+        nativeIntegrity: NativeUvcIntegrityStats,
+    ): UvcArtifactDiagnostics {
         val decoded = decodedFrames.get()
         val rendered = renderedFrames.get()
         return UvcArtifactDiagnostics(
@@ -217,6 +256,7 @@ internal class UvcArtifactMonitor(
             transform = "rotation=${transform.rotationDegrees}, mirrorH=${transform.mirrorHorizontal}, " +
                 "mirrorV=${transform.mirrorVertical}, display=${transform.displayMode}",
             recording = recordingState::class.simpleName.orEmpty(),
+            nativeIntegrity = nativeIntegrity,
         )
     }
 

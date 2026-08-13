@@ -17,4 +17,4 @@ dependencyResolutionManagement {
 
 rootProject.name = "RammyAIGun"
 include(":android:app")
-
+include(":android:uvcandroid")

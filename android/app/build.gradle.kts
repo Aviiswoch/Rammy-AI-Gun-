@@ -97,7 +97,7 @@ dependencies {
     implementation("androidx.compose.material:material-icons-extended")
 
     // Maintained native libuvc + USB host implementation. Frames stay outside Compose.
-    implementation("com.herohan:UVCAndroid:1.0.13")
+    implementation(project(":android:uvcandroid"))
 
     testImplementation("junit:junit:4.13.2")
     debugImplementation("androidx.compose.ui:ui-tooling")

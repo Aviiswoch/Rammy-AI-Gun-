@@ -2,6 +2,28 @@
 
 Last updated: 2026-08-13
 
+## Native UVC YUY2 frame-integrity patch
+
+- Correlated the SM-A156E physical diagnostics with the exact UVCAndroid 1.0.13 native failure paths; the full-size RGBX callback could contain stale regions from a partial raw YUY2 conversion
+- Preserved safe rollback at commit `43f55bd` and vendored the matching upstream UVCAndroid 1.0.13 `libuvccamera` source (commit `6018c7f20238832929cf61427427bb7828056260`) into `android/uvcandroid`
+- Replaced only the Maven binary dependency with the source-built project module; existing CameraHelper/USB/permission/preview/photo/recording APIs remain unchanged
+- Added frame-level corruption and EOF state in native libuvc
+- UVC ERR packets, failed isochronous packets/transfers, missing-EOF FID changes, empty EOF frames, overflow, and YUY2 size mismatches are discarded before decode/render
+- Removed the unsafe publish-on-maximum-size shortcut; explicit EOF is required
+- Added exact `width * height * 2` YUY2 validation before conversion and preview enqueue
+- Partial YUY2 input can no longer partially overwrite and publish a reused RGBX destination; the renderer keeps its last good frame
+- Added nine native packet/frame integrity counters through JNI and the existing debug Diagnostics/Copy/Export flow
+- Added periodic `[UVC_NATIVE]` summaries and debug-native `[UVC_DROP]` reasons; the green-block heuristic remains debug-only and is not used for production acceptance
+- Debug unit tests: **passed** (8 tests, 0 failures/errors)
+- Native debug compilation for `arm64-v8a`, `armeabi-v7a`, `x86`, `x86_64`: **passed**
+- Debug APK: **passed**, signed/aligned, package `com.rammy.aigun.debug`, version `1.0.0-debug` (`versionCode` 2)
+- Debug APK: `android/app/build/outputs/apk/debug/app-debug.apk`
+- Debug APK modified: `2026-08-13 17:09:04 +05:30`; size: 28,632,077 bytes
+- Debug APK SHA-256: `77D0436D0BA6978C174897B68EC0A157C983105D02738B45C9B8F240913DB357`
+- Release native compilation for all four ABIs and release Kotlin compilation: **passed**
+- No ADB device was connected. Source-level fix implemented; physical UVC verification required on the affected phone for at least five minutes
+- Integration details: `UVC_NATIVE_PATCH.md`; fix and test instructions: `UVC_ARTIFACT_FIX.md`
+
 ## UVC artifact diagnostic inspection
 
 - Diagnosed the full UVCAndroid 1.0.13 USB packet -> native frame assembly -> MJPEG/YUYV decode -> shared OpenGL renderer -> preview/photo/recording path
