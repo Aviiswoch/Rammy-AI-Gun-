@@ -2,6 +2,28 @@
 
 Last updated: 2026-08-13
 
+## Installable release APK fix
+
+- Root cause confirmed: the previous `app-release-unsigned.apk` contained no signing certificate; `apksigner` reported `DOES NOT VERIFY` and `Missing META-INF/MANIFEST.MF`
+- Added release signing support through external `RAMMY_RELEASE_*` Gradle properties/environment variables; no keystore or secrets committed
+- No official Rammy AI Gun release/upload keystore was found locally
+- Created a sideload-only release using the existing Android debug signing identity through the explicit `rammyLocalTestSigning=true` build switch
+- Final standalone APK: `release-output/Rammy-AI-Gun-1.0.0.apk`
+- Gradle release output: `android/app/build/outputs/apk/release/app-release.apk`
+- Final package: `com.rammy.aigun`
+- Final version: `1.0.0` (`versionCode` 2)
+- Final APK size: 10,182,122 bytes
+- Final APK SHA-256: `25B63E26D82BD4C911097B48915254E21FD676CC0CC2689754BC4D758D345C90`
+- Signature verification: **passed** (one signer, APK Signature Scheme v2)
+- Zip alignment verification: **passed**
+- Package/badging verification: **passed**
+- Universal ABI verification: **passed** (`arm64-v8a`, `armeabi-v7a`, `x86`, `x86_64` with UVC native libraries)
+- Clean `assembleRelease`: **passed**
+- Release unit tests: **passed**
+- Physical installation and camera regression checks: **not run**; no ADB device was connected
+- Camera, USB/UVC, capture, recording, permissions, UI, and logo source files were not changed for this fix
+- Full diagnosis and signing-identity limitations: `RELEASE_APK_FIX.md`
+
 ## Play Store identity update
 
 - Official launcher logo changed to the supplied `logo.png` without redesign, recoloring, cropping, or proportion changes
@@ -12,9 +34,9 @@ Last updated: 2026-08-13
 - Manifest `android:icon` and `android:roundIcon` now reference the new launcher resources
 - Final `versionName`: `1.0.0`
 - Final `versionCode`: `2` (advanced conservatively because Play Console usage of code 1 cannot be verified from the repository)
-- Release APK build: **passed** (`app-release-unsigned.apk`)
+- Original release APK build: **passed but unsigned** (`app-release-unsigned.apk`); superseded by the signed local-test artifact documented above
 - Release AAB build: **passed** (`app-release.aab`)
-- Release artifacts are unsigned because the repository has no release signing configuration; sign them with the private release/upload key before distribution or Play Console upload
+- The AAB remains unsuitable for Play upload until rebuilt with the official Rammy upload/release key
 - Release lint-vital check: **passed**
 - Camera, USB/UVC, media, permission, and UI-control source files were not changed for this identity update
 

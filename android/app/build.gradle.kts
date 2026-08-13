@@ -4,6 +4,26 @@ plugins {
     id("org.jetbrains.kotlin.plugin.compose")
 }
 
+fun signingValue(name: String): String? =
+    providers.gradleProperty(name)
+        .orElse(providers.environmentVariable(name))
+        .orNull
+        ?.takeIf(String::isNotBlank)
+
+val rammyReleaseStoreFile = signingValue("RAMMY_RELEASE_STORE_FILE")
+val rammyReleaseStorePassword = signingValue("RAMMY_RELEASE_STORE_PASSWORD")
+val rammyReleaseKeyAlias = signingValue("RAMMY_RELEASE_KEY_ALIAS")
+val rammyReleaseKeyPassword = signingValue("RAMMY_RELEASE_KEY_PASSWORD")
+val hasRammyReleaseSigning = listOf(
+    rammyReleaseStoreFile,
+    rammyReleaseStorePassword,
+    rammyReleaseKeyAlias,
+    rammyReleaseKeyPassword,
+).all { it != null }
+val useLocalTestSigning = providers.gradleProperty("rammyLocalTestSigning")
+    .orNull
+    .toBoolean()
+
 android {
     namespace = "com.rammy.aigun"
     compileSdk = 35
@@ -20,6 +40,17 @@ android {
         ndk.abiFilters += listOf("arm64-v8a", "armeabi-v7a", "x86", "x86_64")
     }
 
+    signingConfigs {
+        if (hasRammyReleaseSigning) {
+            create("rammyRelease") {
+                storeFile = file(rammyReleaseStoreFile!!)
+                storePassword = rammyReleaseStorePassword
+                keyAlias = rammyReleaseKeyAlias
+                keyPassword = rammyReleaseKeyPassword
+            }
+        }
+    }
+
     buildTypes {
         debug {
             applicationIdSuffix = ".debug"
@@ -27,6 +58,10 @@ android {
         }
         release {
             isMinifyEnabled = true
+            when {
+                hasRammyReleaseSigning -> signingConfig = signingConfigs.getByName("rammyRelease")
+                useLocalTestSigning -> signingConfig = signingConfigs.getByName("debug")
+            }
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro",
