@@ -36,8 +36,8 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.rounded.AspectRatio
 import androidx.compose.material.icons.rounded.FiberManualRecord
-import androidx.compose.material.icons.rounded.Fullscreen
 import androidx.compose.material.icons.rounded.Info
 import androidx.compose.material.icons.rounded.PhotoCamera
 import androidx.compose.material.icons.rounded.Refresh
@@ -107,7 +107,6 @@ fun CameraScreen(viewModel: CameraViewModel) {
     var showUsbDiagnostics by remember { mutableStateOf(false) }
     var showInfo by remember { mutableStateOf(false) }
     var controlsVisible by rememberSaveable { mutableStateOf(true) }
-    var fullScreen by rememberSaveable { mutableStateOf(false) }
     var transientMessage by remember { mutableStateOf<String?>(null) }
     var messageGeneration by remember { mutableStateOf(0) }
     var shutterVisible by remember { mutableStateOf(false) }
@@ -206,7 +205,6 @@ fun CameraScreen(viewModel: CameraViewModel) {
                     .fillMaxSize()
                     .clickable {
                         controlsVisible = true
-                        fullScreen = false
                     },
             )
         }
@@ -251,10 +249,7 @@ fun CameraScreen(viewModel: CameraViewModel) {
                     haptics.performHapticFeedback(HapticFeedbackType.TextHandleMove)
                     viewModel.rotatePreviewClockwise()
                 },
-                onFullScreen = {
-                    fullScreen = !fullScreen
-                    controlsVisible = !fullScreen
-                },
+                onDisplayMode = viewModel::toggleDisplayMode,
                 onHideControls = { controlsVisible = false },
                 onPhoto = {
                     haptics.performHapticFeedback(HapticFeedbackType.LongPress)
@@ -317,7 +312,7 @@ private fun MonitorChrome(
     controls: CameraControlsState,
     onInfo: () -> Unit,
     onRotate: () -> Unit,
-    onFullScreen: () -> Unit,
+    onDisplayMode: () -> Unit,
     onHideControls: () -> Unit,
     onPhoto: () -> Unit,
     onRecord: () -> Unit,
@@ -365,7 +360,11 @@ private fun MonitorChrome(
                             "Rotate ${controls.transform.rotationDegrees} degrees",
                             onRotate,
                         )
-                        MonitorTool(Icons.Rounded.Fullscreen, "Full screen", onFullScreen)
+                        MonitorTool(
+                            Icons.Rounded.AspectRatio,
+                            controls.transform.displayMode.name,
+                            onDisplayMode,
+                        )
                         MonitorTool(Icons.Rounded.VisibilityOff, "Hide controls", onHideControls)
                     }
                     IconButton(onClick = onSettings, modifier = Modifier.size(36.dp)) {
