@@ -36,8 +36,6 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.rounded.AspectRatio
-import androidx.compose.material.icons.rounded.Collections
 import androidx.compose.material.icons.rounded.FiberManualRecord
 import androidx.compose.material.icons.rounded.Fullscreen
 import androidx.compose.material.icons.rounded.Info
@@ -90,7 +88,6 @@ import com.rammy.aigun.camera.CameraUiEvent
 import com.rammy.aigun.camera.CameraViewModel
 import com.rammy.aigun.camera.DiagnosticTextExporter
 import com.rammy.aigun.camera.FirstFrameTextureView
-import com.rammy.aigun.camera.PreviewDisplayMode
 import com.rammy.aigun.camera.RecordingState
 import com.rammy.aigun.camera.UsbDiagnostics
 import kotlinx.coroutines.delay
@@ -254,7 +251,6 @@ fun CameraScreen(viewModel: CameraViewModel) {
                     haptics.performHapticFeedback(HapticFeedbackType.TextHandleMove)
                     viewModel.rotatePreviewClockwise()
                 },
-                onDisplayMode = viewModel::toggleDisplayMode,
                 onFullScreen = {
                     fullScreen = !fullScreen
                     controlsVisible = !fullScreen
@@ -321,7 +317,6 @@ private fun MonitorChrome(
     controls: CameraControlsState,
     onInfo: () -> Unit,
     onRotate: () -> Unit,
-    onDisplayMode: () -> Unit,
     onFullScreen: () -> Unit,
     onHideControls: () -> Unit,
     onPhoto: () -> Unit,
@@ -370,11 +365,6 @@ private fun MonitorChrome(
                             "Rotate ${controls.transform.rotationDegrees} degrees",
                             onRotate,
                         )
-                        MonitorTool(
-                            Icons.Rounded.AspectRatio,
-                            controls.transform.displayMode.name,
-                            onDisplayMode,
-                        )
                         MonitorTool(Icons.Rounded.Fullscreen, "Full screen", onFullScreen)
                         MonitorTool(Icons.Rounded.VisibilityOff, "Hide controls", onHideControls)
                     }
@@ -410,7 +400,6 @@ private fun MonitorChrome(
                 controls = controls,
                 onPhoto = onPhoto,
                 onRecord = onRecord,
-                onSettings = onSettings,
             )
         } else {
             Spacer(Modifier.height(48.dp))
@@ -423,7 +412,6 @@ private fun BottomControls(
     controls: CameraControlsState,
     onPhoto: () -> Unit,
     onRecord: () -> Unit,
-    onSettings: () -> Unit,
 ) {
     var elapsedSeconds by remember { mutableStateOf(0L) }
     val recording = controls.recording
@@ -451,7 +439,6 @@ private fun BottomControls(
             horizontalArrangement = Arrangement.SpaceEvenly,
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            DisabledAction(Icons.Rounded.Collections, "Gallery")
             CameraAction(
                 icon = Icons.Rounded.PhotoCamera,
                 label = if (controls.photoCaptureInProgress) "Saving" else "Photo",
@@ -467,7 +454,6 @@ private fun BottomControls(
                 record = true,
                 active = isRecordingActive,
             )
-            EnabledAction(Icons.Rounded.Settings, "Settings", onSettings)
         }
     }
 }
@@ -846,55 +832,6 @@ private fun CameraAction(
                     modifier = Modifier.size(22.dp),
                 )
             }
-        }
-        Spacer(Modifier.height(5.dp))
-        Text(label, fontSize = 10.sp, color = Color.White.copy(alpha = 0.82f))
-    }
-}
-
-@Composable
-private fun DisabledAction(
-    icon: ImageVector,
-    label: String,
-    prominent: Boolean = false,
-    record: Boolean = false,
-) {
-    Column(
-        modifier = Modifier.alpha(0.48f),
-        horizontalAlignment = Alignment.CenterHorizontally,
-    ) {
-        Surface(
-            modifier = Modifier.size(if (prominent) 52.dp else 44.dp),
-            shape = CircleShape,
-            color = when {
-                prominent -> Color.White
-                record -> MaterialTheme.colorScheme.error.copy(alpha = 0.22f)
-                else -> Color.White.copy(alpha = 0.08f)
-            },
-        ) {
-            Box(contentAlignment = Alignment.Center) {
-                Icon(
-                    icon,
-                    label,
-                    tint = when {
-                        prominent -> MonitorBlack
-                        record -> MaterialTheme.colorScheme.error
-                        else -> Color.White
-                    },
-                    modifier = Modifier.size(22.dp),
-                )
-            }
-        }
-        Spacer(Modifier.height(5.dp))
-        Text(label, fontSize = 10.sp, color = Color.White.copy(alpha = 0.72f))
-    }
-}
-
-@Composable
-private fun EnabledAction(icon: ImageVector, label: String, onClick: () -> Unit) {
-    Column(horizontalAlignment = Alignment.CenterHorizontally) {
-        IconButton(onClick = onClick, modifier = Modifier.size(44.dp)) {
-            Icon(icon, label, tint = Color.White, modifier = Modifier.size(22.dp))
         }
         Spacer(Modifier.height(5.dp))
         Text(label, fontSize = 10.sp, color = Color.White.copy(alpha = 0.82f))
