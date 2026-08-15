@@ -26,4 +26,27 @@ class NativeUvcIntegrityStatsTest {
         assertEquals(7, stats.uvcPacketsTotal)
         assertEquals(0, stats.rawYuy2FramesDropped)
     }
+
+    @Test
+    fun mapsNativePreviewPerformanceCounterOrder() {
+        val stats = NativePreviewPerformanceStats.from(LongArray(19) { (it + 1).toLong() })
+
+        assertEquals(1, stats.rawFramesReceived)
+        assertEquals(2, stats.rawFramesAccepted)
+        assertEquals(4, stats.stalePreviewFramesDropped)
+        assertEquals(5, stats.decodedFrames)
+        assertEquals(11, stats.queueDepth)
+        assertEquals(13, stats.bufferPoolAvailable)
+        assertEquals(19, stats.lastConversionNs)
+    }
+
+    @Test
+    fun previewPerformanceMappingToleratesUnavailableNativeValues() {
+        val stats = NativePreviewPerformanceStats.from(longArrayOf(12, 9))
+
+        assertEquals(12, stats.rawFramesReceived)
+        assertEquals(9, stats.rawFramesAccepted)
+        assertEquals(0, stats.decodedFrames)
+        assertEquals(0, stats.queueDepth)
+    }
 }

@@ -33,6 +33,52 @@ data class NativeUvcIntegrityStats(
     }
 }
 
+data class NativePreviewPerformanceStats(
+    val rawFramesReceived: Long = 0,
+    val rawFramesAccepted: Long = 0,
+    val rawFramesDroppedValidation: Long = 0,
+    val stalePreviewFramesDropped: Long = 0,
+    val decodedFrames: Long = 0,
+    val publishedFrames: Long = 0,
+    val conversionTotalNs: Long = 0,
+    val conversionMaxNs: Long = 0,
+    val rawMaxGapNs: Long = 0,
+    val decodedMaxGapNs: Long = 0,
+    val queueDepth: Long = 0,
+    val queueMaxDepth: Long = 0,
+    val bufferPoolAvailable: Long = 0,
+    val callbackFrames: Long = 0,
+    val lastRawNs: Long = 0,
+    val lastAcceptedNs: Long = 0,
+    val lastDecodedNs: Long = 0,
+    val lastPublishedNs: Long = 0,
+    val lastConversionNs: Long = 0,
+) {
+    companion object {
+        fun from(values: LongArray): NativePreviewPerformanceStats = NativePreviewPerformanceStats(
+            rawFramesReceived = values.getOrElse(0) { 0 },
+            rawFramesAccepted = values.getOrElse(1) { 0 },
+            rawFramesDroppedValidation = values.getOrElse(2) { 0 },
+            stalePreviewFramesDropped = values.getOrElse(3) { 0 },
+            decodedFrames = values.getOrElse(4) { 0 },
+            publishedFrames = values.getOrElse(5) { 0 },
+            conversionTotalNs = values.getOrElse(6) { 0 },
+            conversionMaxNs = values.getOrElse(7) { 0 },
+            rawMaxGapNs = values.getOrElse(8) { 0 },
+            decodedMaxGapNs = values.getOrElse(9) { 0 },
+            queueDepth = values.getOrElse(10) { 0 },
+            queueMaxDepth = values.getOrElse(11) { 0 },
+            bufferPoolAvailable = values.getOrElse(12) { 0 },
+            callbackFrames = values.getOrElse(13) { 0 },
+            lastRawNs = values.getOrElse(14) { 0 },
+            lastAcceptedNs = values.getOrElse(15) { 0 },
+            lastDecodedNs = values.getOrElse(16) { 0 },
+            lastPublishedNs = values.getOrElse(17) { 0 },
+            lastConversionNs = values.getOrElse(18) { 0 },
+        )
+    }
+}
+
 data class UvcArtifactDiagnostics(
     val enabled: Boolean = false,
     val manufacturer: String = Build.MANUFACTURER.orEmpty(),
@@ -66,6 +112,15 @@ data class UvcArtifactDiagnostics(
     val transform: String = "rotation=0, mirrorH=false, mirrorV=false, display=Fit",
     val recording: String = "Idle",
     val nativeIntegrity: NativeUvcIntegrityStats = NativeUvcIntegrityStats(),
+    val nativePreview: NativePreviewPerformanceStats = NativePreviewPerformanceStats(),
+    val rawCurrentFps: Double = 0.0,
+    val acceptedCurrentFps: Double = 0.0,
+    val decodedCurrentFps: Double = 0.0,
+    val renderedCurrentFps: Double = 0.0,
+    val acceptedAverageFps: Double = 0.0,
+    val acceptedMinimumFps: Double = 0.0,
+    val renderMaxGapMs: Double = 0.0,
+    val frameCallbackIntervalMs: Double = 0.0,
 ) {
     fun asText(): String = buildString {
         appendLine("UVC artifact diagnostics (debug-only): ${if (enabled) "ENABLED" else "DISABLED"}")
@@ -94,6 +149,31 @@ data class UvcArtifactDiagnostics(
         appendLine("Last render callback elapsed ns: $lastRenderCallbackElapsedNs")
         appendLine("Transform: $transform")
         appendLine("Recording: $recording")
+        appendLine("Preview performance:")
+        appendLine("  Raw FPS: ${rawCurrentFps.formatFps()}")
+        appendLine("  Accepted FPS: ${acceptedCurrentFps.formatFps()}")
+        appendLine("  Decoded FPS: ${decodedCurrentFps.formatFps()}")
+        appendLine("  Rendered FPS: ${renderedCurrentFps.formatFps()}")
+        appendLine("  Average accepted FPS: ${acceptedAverageFps.formatFps()}")
+        appendLine("  Minimum accepted FPS (1 s windows): ${acceptedMinimumFps.formatFps()}")
+        appendLine("  Raw frames received: ${nativePreview.rawFramesReceived}")
+        appendLine("  Raw frames accepted: ${nativePreview.rawFramesAccepted}")
+        appendLine("  Raw frames dropped: ${nativePreview.rawFramesDroppedValidation}")
+        appendLine("  Decoded frames: ${nativePreview.decodedFrames}")
+        appendLine("  Native frames published: ${nativePreview.publishedFrames}")
+        appendLine("  Rendered frames: $renderedFramesObserved")
+        appendLine("  Decode duration: ${nativePreview.lastConversionNs.nsToMs()} ms")
+        appendLine("  Max decode duration: ${nativePreview.conversionMaxNs.nsToMs()} ms")
+        appendLine("  Raw to decode: ${positiveDeltaMs(nativePreview.lastDecodedNs, nativePreview.lastAcceptedNs)} ms")
+        appendLine("  Decode to render: ${positiveDeltaMs(lastRenderCallbackElapsedNs, nativePreview.lastDecodedNs)} ms")
+        appendLine("  Frame callback interval: ${"%.1f".format(frameCallbackIntervalMs)} ms")
+        appendLine("  Max raw frame gap: ${nativePreview.rawMaxGapNs.nsToMs()} ms")
+        appendLine("  Max decoded frame gap: ${nativePreview.decodedMaxGapNs.nsToMs()} ms")
+        appendLine("  Max rendered frame gap: ${"%.1f".format(renderMaxGapMs)} ms")
+        appendLine("  Preview queue depth: ${nativePreview.queueDepth} (max ${nativePreview.queueMaxDepth})")
+        appendLine("  Buffers available: ${nativePreview.bufferPoolAvailable}")
+        appendLine("  Frames dropped integrity: ${nativeIntegrity.framesDroppedTotal()}")
+        appendLine("  Frames dropped stale-preview: ${nativePreview.stalePreviewFramesDropped}")
         appendLine("Selected native endpoint: $selectedEndpoint")
         appendLine("Endpoint candidates:")
         if (endpointCandidates.isEmpty()) appendLine("  Unavailable")
@@ -114,7 +194,15 @@ data class UvcArtifactDiagnostics(
         appendLine("Raw MJPEG validation: UNAVAILABLE; callback contains post-decode RGBX")
         append("Native integrity guard discards invalid raw frames before conversion/rendering.")
     }
+
+    private fun Double.formatFps(): String = "%.1f".format(this)
+    private fun Long.nsToMs(): String = "%.1f".format(this / 1_000_000.0)
+    private fun positiveDeltaMs(later: Long, earlier: Long): String =
+        if (later > 0 && earlier > 0 && later >= earlier) (later - earlier).nsToMs() else "Unavailable"
 }
+
+private fun NativeUvcIntegrityStats.framesDroppedTotal(): Long =
+    framesDroppedErr + framesDroppedMissingEof + framesDroppedFidTransition + framesDroppedSizeMismatch
 
 internal class UvcArtifactMonitor(
     val enabled: Boolean,
@@ -132,6 +220,17 @@ internal class UvcArtifactMonitor(
     private val observedBufferIds = linkedSetOf<Int>()
     private var reusedBufferObjects = 0L
     private var previousTileColors: IntArray? = null
+    private var sessionStartedNs = 0L
+    private var previousSnapshotNs = 0L
+    private var previousRawFrames = 0L
+    private var previousAcceptedFrames = 0L
+    private var previousDecodedFrames = 0L
+    private var previousRenderedFrames = 0L
+    private var minimumAcceptedFps = Double.POSITIVE_INFINITY
+    private var previousDecodeCallbackNs = 0L
+    private var lastDecodeCallbackIntervalNs = 0L
+    private var previousRenderCallbackNs = 0L
+    private var maximumRenderGapNs = 0L
 
     @Volatile private var mode = "Not negotiated"
     @Volatile private var availableModes: List<String> = emptyList()
@@ -164,6 +263,18 @@ internal class UvcArtifactMonitor(
         observedBufferIds.clear()
         reusedBufferObjects = 0
         previousTileColors = null
+        val nowNs = SystemClock.elapsedRealtimeNanos()
+        sessionStartedNs = nowNs
+        previousSnapshotNs = nowNs
+        previousRawFrames = 0
+        previousAcceptedFrames = 0
+        previousDecodedFrames = 0
+        previousRenderedFrames = 0
+        minimumAcceptedFps = Double.POSITIVE_INFINITY
+        previousDecodeCallbackNs = 0
+        lastDecodeCallbackIntervalNs = 0
+        previousRenderCallbackNs = 0
+        maximumRenderGapNs = 0
         this.mode = mode
         this.availableModes = availableModes
         this.endpoints = endpoints
@@ -178,30 +289,36 @@ internal class UvcArtifactMonitor(
         if (!enabled) return
         val frameId = decodedFrames.incrementAndGet()
         val startNs = SystemClock.elapsedRealtimeNanos()
+        if (previousDecodeCallbackNs > 0) lastDecodeCallbackIntervalNs = startNs - previousDecodeCallbackNs
+        previousDecodeCallbackNs = startNs
         val actualBytes = buffer.remaining().toLong()
         lastDecodedBytes.set(actualBytes)
         val bufferId = System.identityHashCode(buffer)
         if (!observedBufferIds.add(bufferId)) reusedBufferObjects++
         if (observedBufferIds.size > MAX_TRACKED_BUFFER_OBJECTS) observedBufferIds.remove(observedBufferIds.first())
 
-        val inspection = DecodedRgbxInspector.inspect(buffer, width, height, previousTileColors)
-        previousTileColors = inspection.tileColors
-        if (inspection.sizeMismatch) {
-            decodedSizeMismatches.incrementAndGet()
-            logger(
-                "[CORRUPT_FRAME] frame=$frameId reason=DECODED_RGBX_SIZE_MISMATCH " +
-                    "bytes=${inspection.actualBytes} expected=${inspection.expectedBytes}",
-            )
-        }
-        if (inspection.suspiciousColorBlock) {
-            suspiciousFrames.incrementAndGet()
-            if (inspection.greenRatio >= COLOR_RATIO_THRESHOLD) suspiciousGreenFrames.incrementAndGet()
-            if (inspection.magentaRatio >= COLOR_RATIO_THRESHOLD) suspiciousMagentaFrames.incrementAndGet()
-            logger(
-                "[CORRUPT_FRAME] frame=$frameId reason=COLOR_BLOCK_HEURISTIC_ONLY " +
-                    "bytes=${inspection.actualBytes} changed=${inspection.changedRatio.formatRatio()} " +
-                    "green=${inspection.greenRatio.formatRatio()} magenta=${inspection.magentaRatio.formatRatio()}",
-            )
+        // The color heuristic is intentionally sampled off the critical cadence. Native
+        // integrity and size counters still run for every source frame.
+        if (frameId <= 3 || frameId % COLOR_INSPECTION_INTERVAL == 0L) {
+            val inspection = DecodedRgbxInspector.inspect(buffer, width, height, previousTileColors)
+            previousTileColors = inspection.tileColors
+            if (inspection.sizeMismatch) {
+                decodedSizeMismatches.incrementAndGet()
+                logger(
+                    "[CORRUPT_FRAME] frame=$frameId reason=DECODED_RGBX_SIZE_MISMATCH " +
+                        "bytes=${inspection.actualBytes} expected=${inspection.expectedBytes}",
+                )
+            }
+            if (inspection.suspiciousColorBlock) {
+                suspiciousFrames.incrementAndGet()
+                if (inspection.greenRatio >= COLOR_RATIO_THRESHOLD) suspiciousGreenFrames.incrementAndGet()
+                if (inspection.magentaRatio >= COLOR_RATIO_THRESHOLD) suspiciousMagentaFrames.incrementAndGet()
+                logger(
+                    "[CORRUPT_FRAME] frame=$frameId reason=COLOR_BLOCK_HEURISTIC_ONLY " +
+                        "bytes=${inspection.actualBytes} changed=${inspection.changedRatio.formatRatio()} " +
+                        "green=${inspection.greenRatio.formatRatio()} magenta=${inspection.magentaRatio.formatRatio()}",
+                )
+            }
         }
         val completeNs = SystemClock.elapsedRealtimeNanos()
         lastDecodeNs.set(completeNs)
@@ -213,9 +330,13 @@ internal class UvcArtifactMonitor(
         }
     }
 
+    @Synchronized
     fun onRendered(frameId: Long, elapsedNs: Long) {
         if (!enabled) return
         renderedFrames.incrementAndGet()
+        val previous = previousRenderCallbackNs
+        if (previous > 0 && elapsedNs > previous) maximumRenderGapNs = max(maximumRenderGapNs, elapsedNs - previous)
+        previousRenderCallbackNs = elapsedNs
         lastRenderNs.set(elapsedNs)
         if (frameId <= 5 || frameId % FRAME_LOG_INTERVAL == 0L) {
             logger("[UVC_DIAG] renderComplete frameId=$frameId elapsedNs=$elapsedNs")
@@ -227,9 +348,23 @@ internal class UvcArtifactMonitor(
         transform: CameraTransformState,
         recordingState: RecordingState,
         nativeIntegrity: NativeUvcIntegrityStats,
+        nativePreview: NativePreviewPerformanceStats,
     ): UvcArtifactDiagnostics {
         val decoded = decodedFrames.get()
         val rendered = renderedFrames.get()
+        val nowNs = SystemClock.elapsedRealtimeNanos()
+        val windowSeconds = ((nowNs - previousSnapshotNs).coerceAtLeast(1L)) / 1_000_000_000.0
+        val rawFps = (nativePreview.rawFramesReceived - previousRawFrames).coerceAtLeast(0) / windowSeconds
+        val acceptedFps = (nativePreview.rawFramesAccepted - previousAcceptedFrames).coerceAtLeast(0) / windowSeconds
+        val decodedFps = (nativePreview.decodedFrames - previousDecodedFrames).coerceAtLeast(0) / windowSeconds
+        val renderedFps = (rendered - previousRenderedFrames).coerceAtLeast(0) / windowSeconds
+        if (acceptedFps > 0.0) minimumAcceptedFps = minOf(minimumAcceptedFps, acceptedFps)
+        previousSnapshotNs = nowNs
+        previousRawFrames = nativePreview.rawFramesReceived
+        previousAcceptedFrames = nativePreview.rawFramesAccepted
+        previousDecodedFrames = nativePreview.decodedFrames
+        previousRenderedFrames = rendered
+        val sessionSeconds = ((nowNs - sessionStartedNs).coerceAtLeast(1L)) / 1_000_000_000.0
         return UvcArtifactDiagnostics(
             enabled = enabled,
             currentMode = mode,
@@ -257,6 +392,15 @@ internal class UvcArtifactMonitor(
                 "mirrorV=${transform.mirrorVertical}, display=${transform.displayMode}",
             recording = recordingState::class.simpleName.orEmpty(),
             nativeIntegrity = nativeIntegrity,
+            nativePreview = nativePreview,
+            rawCurrentFps = rawFps,
+            acceptedCurrentFps = acceptedFps,
+            decodedCurrentFps = decodedFps,
+            renderedCurrentFps = renderedFps,
+            acceptedAverageFps = nativePreview.rawFramesAccepted / sessionSeconds,
+            acceptedMinimumFps = minimumAcceptedFps.takeIf { it.isFinite() } ?: 0.0,
+            renderMaxGapMs = maximumRenderGapNs / 1_000_000.0,
+            frameCallbackIntervalMs = lastDecodeCallbackIntervalNs / 1_000_000.0,
         )
     }
 
@@ -264,6 +408,7 @@ internal class UvcArtifactMonitor(
 
     private companion object {
         const val FRAME_LOG_INTERVAL = 300L
+        const val COLOR_INSPECTION_INTERVAL = 15L
         const val MAX_TRACKED_BUFFER_OBJECTS = 64
         const val COLOR_RATIO_THRESHOLD = 0.10
     }

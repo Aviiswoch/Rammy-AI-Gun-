@@ -55,6 +55,22 @@ static jlongArray nativeGetIntegrityStats(JNIEnv *env, jclass clazz) {
     return result;
 }
 
+static jlongArray nativeGetPreviewPerformanceStats(JNIEnv *env, jclass clazz) {
+    uint64_t native_stats[UVC_PREVIEW_PERFORMANCE_STAT_COUNT] = {0};
+    jlong java_stats[UVC_PREVIEW_PERFORMANCE_STAT_COUNT] = {0};
+    int index;
+    (void) clazz;
+
+    uvc_get_preview_performance_stats(native_stats, UVC_PREVIEW_PERFORMANCE_STAT_COUNT);
+    for (index = 0; index < UVC_PREVIEW_PERFORMANCE_STAT_COUNT; ++index)
+        java_stats[index] = (jlong) native_stats[index];
+
+    jlongArray result = env->NewLongArray(UVC_PREVIEW_PERFORMANCE_STAT_COUNT);
+    if (result)
+        env->SetLongArrayRegion(result, 0, UVC_PREVIEW_PERFORMANCE_STAT_COUNT, java_stats);
+    return result;
+}
+
 /**
  * set the value into the long field
  * @param env: this param should not be null
@@ -334,6 +350,7 @@ static jint registerNativeMethods(JNIEnv *env, const char *class_name, JNINative
 
 static JNINativeMethod methods[] = {
         {"nativeGetIntegrityStats",   "()[J",                                      (void *) nativeGetIntegrityStats},
+        {"nativeGetPreviewPerformanceStats", "()[J",                              (void *) nativeGetPreviewPerformanceStats},
         {"nativeCreate",              "()J",                                       (void *) nativeCreate},
         {"nativeDestroy",             "(J)V",                                      (void *) nativeDestroy},
 

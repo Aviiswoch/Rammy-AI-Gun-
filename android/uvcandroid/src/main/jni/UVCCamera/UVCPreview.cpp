@@ -24,6 +24,7 @@
 
 #include <stdlib.h>
 #include <linux/time.h>
+#include <time.h>
 #include <unistd.h>
 
 #ifndef LOG_NDEBUG
@@ -39,6 +40,59 @@
 // RGB_565:2
 #define PREVIEW_PIXEL_BYTES 4
 #define FRAME_POOL_SZ MAX_FRAME + 2
+
+static volatile uint64_t g_uvc_preview_performance[UVC_PREVIEW_PERFORMANCE_STAT_COUNT];
+
+static uint64_t preview_now_ns() {
+    struct timespec value;
+    clock_gettime(CLOCK_MONOTONIC, &value);
+    return (uint64_t) value.tv_sec * 1000000000ULL + (uint64_t) value.tv_nsec;
+}
+
+static void preview_increment(enum uvc_preview_performance_stat_index index) {
+    __sync_fetch_and_add(&g_uvc_preview_performance[index], 1);
+}
+
+static void preview_add(enum uvc_preview_performance_stat_index index, uint64_t value) {
+    __sync_fetch_and_add(&g_uvc_preview_performance[index], value);
+}
+
+static void preview_set(enum uvc_preview_performance_stat_index index, uint64_t value) {
+    __sync_lock_test_and_set(&g_uvc_preview_performance[index], value);
+}
+
+static void preview_update_max(enum uvc_preview_performance_stat_index index, uint64_t value) {
+    uint64_t current = __sync_fetch_and_add(&g_uvc_preview_performance[index], 0);
+    while (value > current &&
+           !__sync_bool_compare_and_swap(&g_uvc_preview_performance[index], current, value)) {
+        current = __sync_fetch_and_add(&g_uvc_preview_performance[index], 0);
+    }
+}
+
+static void preview_mark_timestamp(
+        enum uvc_preview_performance_stat_index last_index,
+        enum uvc_preview_performance_stat_index max_gap_index,
+        uint64_t now_ns) {
+    uint64_t previous = __sync_lock_test_and_set(&g_uvc_preview_performance[last_index], now_ns);
+    if (previous && now_ns > previous)
+        preview_update_max(max_gap_index, now_ns - previous);
+}
+
+void uvc_reset_preview_performance_stats() {
+    int index;
+    for (index = 0; index < UVC_PREVIEW_PERFORMANCE_STAT_COUNT; ++index)
+        __sync_lock_test_and_set(&g_uvc_preview_performance[index], 0);
+}
+
+void uvc_get_preview_performance_stats(uint64_t *out_stats, size_t count) {
+    size_t index;
+    if (!out_stats)
+        return;
+    if (count > UVC_PREVIEW_PERFORMANCE_STAT_COUNT)
+        count = UVC_PREVIEW_PERFORMANCE_STAT_COUNT;
+    for (index = 0; index < count; ++index)
+        out_stats[index] = __sync_fetch_and_add(&g_uvc_preview_performance[index], 0);
+}
 
 UVCPreview::UVCPreview(uvc_device_handle_t *devh)
         : mPreviewWindow(NULL),
@@ -110,6 +164,7 @@ uvc_frame_t *UVCPreview::get_frame(size_t data_bytes) {
             frame = mFramePool.last();
         }
     }
+    preview_set(UVC_PREVIEW_POOL_AVAILABLE, mFramePool.size());
     pthread_mutex_unlock(&pool_mutex);
     if UNLIKELY(!frame) {
         LOGI("allocate new frame");
@@ -126,6 +181,7 @@ void UVCPreview::recycle_frame(uvc_frame_t *frame) {
         mFramePool.put(frame);
         frame = NULL;
     }
+    preview_set(UVC_PREVIEW_POOL_AVAILABLE, mFramePool.size());
     pthread_mutex_unlock(&pool_mutex);
     if (UNLIKELY(frame)) {
         uvc_free_frame(frame);
@@ -142,6 +198,7 @@ void UVCPreview::init_pool(size_t data_bytes) {
         for (int i = 0; i < FRAME_POOL_SZ; i++) {
             mFramePool.put(uvc_allocate_frame(data_bytes));
         }
+        preview_set(UVC_PREVIEW_POOL_AVAILABLE, mFramePool.size());
     }
     pthread_mutex_unlock(&pool_mutex);
 
@@ -158,6 +215,7 @@ void UVCPreview::clear_pool() {
             uvc_free_frame(mFramePool[i]);
         }
         mFramePool.clear();
+        preview_set(UVC_PREVIEW_POOL_AVAILABLE, 0);
     }
     pthread_mutex_unlock(&pool_mutex);
     EXIT();
@@ -365,6 +423,7 @@ int UVCPreview::startPreview() {
 
     int result = EXIT_FAILURE;
     if (!isRunning()) {
+        uvc_reset_preview_performance_stats();
         mIsRunning = true;
         pthread_mutex_lock(&preview_mutex);
         {
@@ -427,6 +486,9 @@ void UVCPreview::uvc_preview_frame_callback(uvc_frame_t *frame, void *vptr_args)
     if UNLIKELY(!preview->isRunning() || !frame || !frame->frame_format || !frame->data ||
                 !frame->data_bytes)
         return;
+    const uint64_t raw_now_ns = preview_now_ns();
+    preview_increment(UVC_PREVIEW_RAW_FRAMES_RECEIVED);
+    preview_mark_timestamp(UVC_PREVIEW_LAST_RAW_NS, UVC_PREVIEW_RAW_MAX_GAP_NS, raw_now_ns);
     const size_t expected_yuyv_bytes =
             (size_t) preview->frameWidth * (size_t) preview->frameHeight * 2U;
     if (UNLIKELY(
@@ -437,6 +499,7 @@ void UVCPreview::uvc_preview_frame_callback(uvc_frame_t *frame, void *vptr_args)
              "size=%dx%d expectedSize=%dx%d",
              frame->frame_format, frame->data_bytes, expected_yuyv_bytes,
              frame->width, frame->height, preview->frameWidth, preview->frameHeight);
+        preview_increment(UVC_PREVIEW_RAW_FRAMES_DROPPED_VALIDATION);
         return;
     }
     if (LIKELY(preview->isRunning())) {
@@ -452,6 +515,8 @@ void UVCPreview::uvc_preview_frame_callback(uvc_frame_t *frame, void *vptr_args)
             preview->recycle_frame(copy);
             return;
         }
+        preview_increment(UVC_PREVIEW_RAW_FRAMES_ACCEPTED);
+        preview_set(UVC_PREVIEW_LAST_ACCEPTED_NS, preview_now_ns());
         preview->addPreviewFrame(copy);
     }
 }
@@ -459,9 +524,17 @@ void UVCPreview::uvc_preview_frame_callback(uvc_frame_t *frame, void *vptr_args)
 void UVCPreview::addPreviewFrame(uvc_frame_t *frame) {
 
     pthread_mutex_lock(&preview_mutex);
-    if (isRunning() && (previewFrames.size() < MAX_FRAME)) {
+    if (isRunning()) {
+        // Preview is real-time: every queued frame has already passed native integrity
+        // validation, so discard stale valid work and retain only the newest valid frame.
+        while (previewFrames.size() > 0) {
+            recycle_frame(previewFrames.remove(0));
+            preview_increment(UVC_PREVIEW_STALE_FRAMES_DROPPED);
+        }
         previewFrames.put(frame);
         frame = NULL;
+        preview_set(UVC_PREVIEW_QUEUE_DEPTH, previewFrames.size());
+        preview_update_max(UVC_PREVIEW_QUEUE_MAX_DEPTH, previewFrames.size());
         pthread_cond_signal(&preview_sync);
     }
     pthread_mutex_unlock(&preview_mutex);
@@ -480,6 +553,7 @@ uvc_frame_t *UVCPreview::waitPreviewFrame() {
         if (LIKELY(isRunning() && previewFrames.size() > 0)) {
             frame = previewFrames.remove(0);
         }
+        preview_set(UVC_PREVIEW_QUEUE_DEPTH, previewFrames.size());
     }
     pthread_mutex_unlock(&preview_mutex);
     return frame;
@@ -491,6 +565,7 @@ void UVCPreview::clearPreviewFrame() {
         for (int i = 0; i < previewFrames.size(); i++)
             recycle_frame(previewFrames[i]);
         previewFrames.clear();
+        preview_set(UVC_PREVIEW_QUEUE_DEPTH, 0);
     }
     pthread_mutex_unlock(&preview_mutex);
 }
@@ -579,10 +654,21 @@ void UVCPreview::do_preview(uvc_stream_ctrl_t *ctrl) {
                     frame = get_frame(
                             frame_mjpeg->width * frame_mjpeg->height * PREVIEW_PIXEL_BYTES);
 //                    c_start = clock();
-                    result = uvc_mjpeg2rgbx_tj(frame_mjpeg, frame);   // MJPEG => yuyv
+                    const uint64_t decode_start_ns = preview_now_ns();
+                    result = uvc_mjpeg2rgbx_tj(frame_mjpeg, frame);   // MJPEG => RGBX
+                    const uint64_t decode_complete_ns = preview_now_ns();
+                    const uint64_t decode_duration_ns = decode_complete_ns - decode_start_ns;
+                    preview_set(UVC_PREVIEW_LAST_CONVERSION_NS, decode_duration_ns);
+                    preview_add(UVC_PREVIEW_CONVERSION_TOTAL_NS, decode_duration_ns);
+                    preview_update_max(UVC_PREVIEW_CONVERSION_MAX_NS, decode_duration_ns);
 //                    c_end = clock();
 //                    LOGI("uvc_mjpeg2yuyv time: %f", (double) (c_end - c_start) / CLOCKS_PER_SEC);
                     if (LIKELY(!result)) {
+                        preview_increment(UVC_PREVIEW_FRAMES_DECODED);
+                        preview_mark_timestamp(
+                                UVC_PREVIEW_LAST_DECODED_NS,
+                                UVC_PREVIEW_DECODED_MAX_GAP_NS,
+                                decode_complete_ns);
                         draw_preview_one(frame, &mPreviewWindow);
                         if (!addCaptureFrame(frame)) {
                             recycle_frame(frame);
@@ -600,11 +686,22 @@ void UVCPreview::do_preview(uvc_stream_ctrl_t *ctrl) {
                 if (LIKELY(frame_yuv)) {
                     frame = get_frame(frame_yuv->width * frame_yuv->height * PREVIEW_PIXEL_BYTES);
 //                    c_start = clock();
+                    const uint64_t decode_start_ns = preview_now_ns();
                     result = uvc_yuyv2rgbx(frame_yuv, frame);   // YUYV => RGBX
+                    const uint64_t decode_complete_ns = preview_now_ns();
+                    const uint64_t decode_duration_ns = decode_complete_ns - decode_start_ns;
+                    preview_set(UVC_PREVIEW_LAST_CONVERSION_NS, decode_duration_ns);
+                    preview_add(UVC_PREVIEW_CONVERSION_TOTAL_NS, decode_duration_ns);
+                    preview_update_max(UVC_PREVIEW_CONVERSION_MAX_NS, decode_duration_ns);
 //                    c_end = clock();
 //                    LOGI("uvc_yuyv2rgbx time: %f", (double) (c_end - c_start) / CLOCKS_PER_SEC);
 
                     if (LIKELY(!result)) {
+                        preview_increment(UVC_PREVIEW_FRAMES_DECODED);
+                        preview_mark_timestamp(
+                                UVC_PREVIEW_LAST_DECODED_NS,
+                                UVC_PREVIEW_DECODED_MAX_GAP_NS,
+                                decode_complete_ns);
                         draw_preview_one(frame, &mPreviewWindow);
                         if (!addCaptureFrame(frame)) {
                             recycle_frame(frame);
@@ -666,7 +763,10 @@ void UVCPreview::draw_preview_one(uvc_frame_t *frame, ANativeWindow **window) {
     pthread_mutex_lock(&preview_mutex);
     {
         if (LIKELY(*window != NULL)) {
-            copyToSurface(frame, window);
+            if (LIKELY(copyToSurface(frame, window) == 0)) {
+                preview_increment(UVC_PREVIEW_FRAMES_PUBLISHED);
+                preview_set(UVC_PREVIEW_LAST_PUBLISHED_NS, preview_now_ns());
+            }
         }
     }
     pthread_mutex_unlock(&preview_mutex);
@@ -875,6 +975,7 @@ void UVCPreview::do_capture_callback(JNIEnv *env, uvc_frame_t *frame) {
             }
             jobject buf = env->NewDirectByteBuffer(callback_frame->data, callbackPixelBytes);
             env->CallVoidMethod(mFrameCallbackObj, iframecallback_fields.onFrame, buf);
+            preview_increment(UVC_PREVIEW_CALLBACK_FRAMES);
             env->ExceptionClear();
             env->DeleteLocalRef(buf);
         }

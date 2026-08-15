@@ -311,6 +311,9 @@ public class UVCCameraTextureView extends AspectRatioTextureView    // API >= 14
         public final void onFrameAvailable(final SurfaceTexture surfaceTexture) {
             if (mIsActive) {
                 mFpsCounter.count();
+                // SurfaceTexture already contains the newest completed buffer. Keep at most
+                // one pending draw so slower GPUs do not replay an obsolete message backlog.
+                mThread.removeMessages(MSG_REQUEST_RENDER);
                 mThread.sendEmptyMessage(MSG_REQUEST_RENDER);
             }
         }

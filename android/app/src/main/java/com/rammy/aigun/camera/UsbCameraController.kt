@@ -986,6 +986,11 @@ class UsbCameraController(context: Context) {
         }.onFailure {
             artifactLog("[UVC_DIAG] Unable to read native integrity counters: ${it.message}")
         }.getOrDefault(NativeUvcIntegrityStats())
+        val nativePreview = runCatching {
+            NativePreviewPerformanceStats.from(UVCCamera.getPreviewPerformanceStats())
+        }.onFailure {
+            artifactLog("[UVC_DIAG] Unable to read native preview performance counters: ${it.message}")
+        }.getOrDefault(NativePreviewPerformanceStats())
         artifactLog(
             "[UVC_NATIVE] packets=${nativeIntegrity.uvcPacketsTotal} " +
                 "packetErr=${nativeIntegrity.uvcPacketsErr} eof=${nativeIntegrity.framesCompletedWithEof} " +
@@ -996,11 +1001,22 @@ class UsbCameraController(context: Context) {
                 "yuy2Accepted=${nativeIntegrity.rawYuy2FramesAccepted} " +
                 "yuy2Dropped=${nativeIntegrity.rawYuy2FramesDropped}",
         )
+        artifactLog(
+            "[UVC_PERF] raw=${nativePreview.rawFramesReceived} " +
+                "accepted=${nativePreview.rawFramesAccepted} decoded=${nativePreview.decodedFrames} " +
+                "published=${nativePreview.publishedFrames} stale=${nativePreview.stalePreviewFramesDropped} " +
+                "queue=${nativePreview.queueDepth}/${nativePreview.queueMaxDepth} " +
+                "pool=${nativePreview.bufferPoolAvailable} " +
+                "rawGapMs=${nativePreview.rawMaxGapNs / 1_000_000.0} " +
+                "decodeGapMs=${nativePreview.decodedMaxGapNs / 1_000_000.0} " +
+                "decodeMs=${nativePreview.lastConversionNs / 1_000_000.0}",
+        )
         mutableDiagnostics.value = mutableDiagnostics.value.copy(
             artifact = artifactMonitor.snapshot(
                 transform = mutableControls.value.transform,
                 recordingState = mutableControls.value.recording,
                 nativeIntegrity = nativeIntegrity,
+                nativePreview = nativePreview,
             ),
         )
     }

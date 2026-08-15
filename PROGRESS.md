@@ -134,3 +134,32 @@ Full implementation and physical test details: `CAMERA_CONTROLS.md`.
 - Recording audio
 - Full settings milestone beyond the already-visible diagnostics/settings overlay
 - Release signing and Play Console upload
+
+## Android 14 preview cadence diagnostics and backpressure fix
+
+- Traced the live path from libusb/libuvc assembly through YUY2 conversion, native surface
+  publication, SurfaceTexture/OpenGL rendering, and TextureView display
+- Identified two source-level backpressure defects: a four-frame FIFO before conversion
+  and uncoalesced pending GL render messages
+- Changed preview delivery to newest-complete-valid-frame semantics with a queue depth of
+  one; only obsolete valid queued frames are dropped
+- Coalesced redundant pending renderer messages without changing camera lifecycle or
+  stream negotiation
+- Reduced the debug color heuristic to one sampled callback in 15; native integrity
+  validation and counters remain active on every packet/frame
+- Added debug raw/accepted/decoded/rendered FPS, timing gaps, conversion duration, queue
+  depth, buffer availability, and stale-preview counters
+- Protected `libuvc/src/stream.c` is byte-for-byte unchanged; SHA-256 remains
+  `904747BC986906CC511B78042FF44FCCBB5D89F692DFDC0131A74D564C66D871`
+- ERR, malformed-header, missing-EOF/FID, exact YUY2-size, complete-conversion, last-good-
+  frame, and native-integrity protections remain enabled
+- Debug unit tests: **passed** (10 tests, zero failures)
+- Native debug build and `assembleDebug`: **passed**
+- Debug APK: `android/app/build/outputs/apk/debug/app-debug.apk`
+- Debug identity: `com.rammy.aigun.debug`, version `1.0.0-debug` (`versionCode` 2)
+- APK built 2026-08-15 12:01:03 +05:30; size 28,380,613 bytes
+- APK SHA-256: `6CE8A3B308D43FDFE448AFC648213BA02668D4FA2FEF8C33635B6EAD6EF29136`
+- Debug APK signature (v2), package badging, and ZIP alignment: **verified**
+- Physical Android 14 five-minute preview/record/photo verification: **required**; no ADB
+  device was available in this workspace
+- Full diagnosis, counter interpretation, and test procedure: `UVC_ANDROID14_STUTTER_FIX.md`

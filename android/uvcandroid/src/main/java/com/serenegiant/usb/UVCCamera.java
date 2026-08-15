@@ -626,6 +626,13 @@ public class UVCCamera {
 
     private static native long[] nativeGetIntegrityStats();
 
+    /** Native preview cadence/backpressure counters, reset each time preview starts. */
+    public static long[] getPreviewPerformanceStats() {
+        return nativeGetPreviewPerformanceStats();
+    }
+
+    private static native long[] nativeGetPreviewPerformanceStats();
+
     private native int nativeStartPreview(final long id_camera);
 
     private native int nativeStopPreview(final long id_camera);
