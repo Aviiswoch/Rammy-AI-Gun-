@@ -13,6 +13,7 @@ import com.serenegiant.opengl.GLDrawer2D;
 import com.serenegiant.opengl.renderer.MirrorMode;
 import com.serenegiant.opengl.renderer.RendererHolder;
 import com.serenegiant.opengl.renderer.RendererHolderCallback;
+import com.serenegiant.opengl.renderer.RendererSurface;
 import com.serenegiant.uvccamera.BuildConfig;
 
 import java.nio.ByteBuffer;
@@ -24,6 +25,12 @@ class CameraRendererHolder extends RendererHolder implements ICameraRendererHold
     private static final String TAG = CameraRendererHolder.class.getSimpleName();
 
     private CaptureHolder mCaptureHolder;
+    private CameraWatermarkRenderer mWatermarkRenderer;
+    private final Runnable mDrawRecordingWatermark = () -> {
+        if (mWatermarkRenderer != null) {
+            mWatermarkRenderer.draw(mVideoWidth, mVideoHeight);
+        }
+    };
 
     public CameraRendererHolder(int width, int height, @Nullable RendererHolderCallback callback) {
         this(width, height,
@@ -38,7 +45,11 @@ class CameraRendererHolder extends RendererHolder implements ICameraRendererHold
     @Override
     protected void onPrimarySurfaceCreate(Surface surface) {
         super.onPrimarySurfaceCreate(surface);
-        mRendererHandler.post(() -> mCaptureHolder = new CaptureHolder());
+        mRendererHandler.post(() -> {
+            makeCurrent();
+            mCaptureHolder = new CaptureHolder();
+            mWatermarkRenderer = new CameraWatermarkRenderer(mContext);
+        });
     }
 
     @Override
@@ -49,7 +60,25 @@ class CameraRendererHolder extends RendererHolder implements ICameraRendererHold
                 mCaptureHolder.release();
                 mCaptureHolder = null;
             }
+            if (mWatermarkRenderer != null) {
+                makeCurrent();
+                mWatermarkRenderer.release();
+                mWatermarkRenderer = null;
+            }
         });
+    }
+
+    @Override
+    protected void onDrawSlaveSurface(
+            RendererSurface surface,
+            int texId,
+            float[] texMatrix,
+            float[] mvpMatrix) {
+        if (surface.isRecordable() && mWatermarkRenderer != null) {
+            surface.draw(getDrawer(), texId, texMatrix, mvpMatrix, mDrawRecordingWatermark);
+        } else {
+            super.onDrawSlaveSurface(surface, texId, texMatrix, mvpMatrix);
+        }
     }
 
     @Override

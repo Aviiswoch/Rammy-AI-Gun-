@@ -11,6 +11,8 @@ import androidx.annotation.IntRange;
 import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
 
+import com.serenegiant.utils.UVCUtils;
+
 import java.io.ByteArrayOutputStream;
 import java.io.File;
 import java.io.FileOutputStream;
@@ -102,6 +104,7 @@ public class ImageSaver implements Runnable {
             final Bitmap bmp = Bitmap.createBitmap(
                     image.getWidth(), image.getHeight(), Bitmap.Config.ARGB_8888);
             bmp.copyPixelsFromBuffer(ByteBuffer.wrap(image.getData()));
+            CameraWatermark.drawOnPhoto(UVCUtils.getApplication(), bmp);
             bmp.compress(Bitmap.CompressFormat.JPEG, jpegQuality, out);
             bmp.recycle();
             return out.toByteArray();

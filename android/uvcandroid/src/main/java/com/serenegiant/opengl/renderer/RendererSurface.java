@@ -7,7 +7,7 @@ import com.serenegiant.opengl.EGLBase;
 import com.serenegiant.opengl.GLDrawer2D;
 import com.serenegiant.utils.Time;
 
-class RendererSurface {
+public class RendererSurface {
 
     /**
      * Factory method
@@ -18,11 +18,12 @@ class RendererSurface {
      * @return
      */
     static RendererSurface newInstance(final EGLBase egl,
-                                       final Object surface, final int maxFps) {
+                                       final Object surface, final int maxFps,
+                                       final boolean recordable) {
 
         return (maxFps > 0)
-                ? new RendererSurfaceHasWait(egl, surface, maxFps)
-                : new RendererSurface(egl, surface);    // no limitation of maxFps
+                ? new RendererSurfaceHasWait(egl, surface, maxFps, recordable)
+                : new RendererSurface(egl, surface, recordable);    // no limitation of maxFps
     }
 
     /**
@@ -33,6 +34,7 @@ class RendererSurface {
      * EglSurface that is used for OpenGL|ES
      */
     private EGLBase.IEglSurface mEGLSurface;
+    private final boolean mRecordable;
     final float[] mMvpMatrix = new float[16];
     protected volatile boolean mEnable = true;
 
@@ -42,8 +44,10 @@ class RendererSurface {
      * @param egl
      * @param surface
      */
-    private RendererSurface(final EGLBase egl, final Object surface) {
+    private RendererSurface(final EGLBase egl, final Object surface,
+                            final boolean recordable) {
         mSurface = surface;
+        mRecordable = recordable;
         mEGLSurface = egl.createFromSurface(surface);
         Matrix.setIdentityM(mMvpMatrix, 0);
     }
@@ -70,6 +74,10 @@ class RendererSurface {
         return mEnable;
     }
 
+    public boolean isRecordable() {
+        return mRecordable;
+    }
+
     public void setEnable(final boolean enable) {
         mEnable = enable;
     }
@@ -83,6 +91,12 @@ class RendererSurface {
     }
 
     public void draw(final GLDrawer2D drawer, final int textId, final float[] texMatrix, final float[] mvpMatrix) {
+        draw(drawer, textId, texMatrix, mvpMatrix, null);
+    }
+
+    /** Draws an optional cached overlay in the same EGL frame before it is presented. */
+    public void draw(final GLDrawer2D drawer, final int textId, final float[] texMatrix,
+                     final float[] mvpMatrix, final Runnable beforeSwap) {
         if (drawer != null && mEGLSurface != null) {
             mEGLSurface.makeCurrent();
             // 本来は映像が全面に描画されるので#glClearでクリアする必要はないけど
@@ -90,6 +104,9 @@ class RendererSurface {
             GLES20.glClear(GLES20.GL_COLOR_BUFFER_BIT);
             drawer.setMvpMatrix(mvpMatrix, 0);
             drawer.draw(textId, texMatrix, 0);
+            if (beforeSwap != null) {
+                beforeSwap.run();
+            }
             mEGLSurface.swap();
         }
     }
@@ -125,9 +142,10 @@ class RendererSurface {
          * @param maxFps  >= 0
          */
         private RendererSurfaceHasWait(final EGLBase egl,
-                                       final Object surface, final int maxFps) {
+                                       final Object surface, final int maxFps,
+                                       final boolean recordable) {
 
-            super(egl, surface);
+            super(egl, surface, recordable);
             mIntervalsNs = 1000000000L / maxFps;
             mNextDraw = Time.nanoTime() + mIntervalsNs;
         }

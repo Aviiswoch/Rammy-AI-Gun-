@@ -16,21 +16,26 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -67,10 +72,12 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -89,7 +96,10 @@ import com.rammy.aigun.camera.CameraViewModel
 import com.rammy.aigun.camera.DiagnosticTextExporter
 import com.rammy.aigun.camera.FirstFrameTextureView
 import com.rammy.aigun.camera.RecordingState
+import com.rammy.aigun.camera.ActiveStream
+import com.rammy.aigun.camera.PreviewDisplayMode
 import com.rammy.aigun.camera.UsbDiagnostics
+import com.herohan.uvcapp.CameraWatermark
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -113,6 +123,7 @@ fun CameraScreen(viewModel: CameraViewModel) {
     var cameraPermissionRequested by rememberSaveable { mutableStateOf(false) }
     var pendingLegacyMediaAction by remember { mutableStateOf<PendingMediaAction?>(null) }
     val isStreaming = state is CameraConnectionState.Streaming
+    val activeStream = (state as? CameraConnectionState.Streaming)?.stream
     val cameraPermissionLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestPermission(),
     ) { granted ->
@@ -198,6 +209,15 @@ fun CameraScreen(viewModel: CameraViewModel) {
             },
             modifier = Modifier.fillMaxSize(),
         )
+
+        activeStream?.let { stream ->
+            LiveCameraWatermark(
+                stream = stream,
+                rotationDegrees = controls.transform.rotationDegrees,
+                displayMode = controls.transform.displayMode,
+                modifier = Modifier.fillMaxSize(),
+            )
+        }
 
         if (isStreaming && !controlsVisible) {
             Box(
@@ -301,6 +321,80 @@ fun CameraScreen(viewModel: CameraViewModel) {
             diagnostics = diagnostics,
             onDismiss = { showUsbDiagnostics = false },
         )
+    }
+}
+
+@Composable
+private fun LiveCameraWatermark(
+    stream: ActiveStream,
+    rotationDegrees: Int,
+    displayMode: PreviewDisplayMode,
+    modifier: Modifier = Modifier,
+) {
+    val context = LocalContext.current
+    val density = LocalDensity.current
+    var dateText by remember { mutableStateOf(CameraWatermark.currentDateText()) }
+
+    LaunchedEffect(Unit) {
+        while (true) {
+            delay(60_000)
+            val current = CameraWatermark.currentDateText()
+            if (current != dateText) dateText = current
+        }
+    }
+
+    val artwork = remember(context, dateText) {
+        CameraWatermark.createArtwork(context, dateText)
+    }
+    val image = remember(artwork) { artwork.asImageBitmap() }
+    DisposableEffect(artwork) {
+        onDispose { artwork.recycle() }
+    }
+
+    BoxWithConstraints(modifier) {
+        val quarterTurn = rotationDegrees == 90 || rotationDegrees == 270
+        val sourceWidth = if (quarterTurn) stream.height else stream.width
+        val sourceHeight = if (quarterTurn) stream.width else stream.height
+        val sourceAspect = sourceWidth.toFloat() / sourceHeight.coerceAtLeast(1).toFloat()
+        val containerAspect = maxWidth.value / maxHeight.value.coerceAtLeast(1f)
+        val contentWidth = when {
+            displayMode == PreviewDisplayMode.Fill -> maxWidth
+            sourceAspect > containerAspect -> maxWidth
+            else -> maxHeight * sourceAspect
+        }
+        val contentHeight = when {
+            displayMode == PreviewDisplayMode.Fill -> maxHeight
+            sourceAspect > containerAspect -> maxWidth / sourceAspect
+            else -> maxHeight
+        }
+        val navigationInset = with(density) {
+            WindowInsets.navigationBars.getBottom(this).toDp()
+        }
+        val contentBottomGap = (maxHeight - contentHeight) / 2
+        val navigationClearance = (navigationInset - contentBottomGap).coerceAtLeast(0.dp)
+
+        Box(
+            modifier = Modifier
+                .align(Alignment.Center)
+                .size(contentWidth, contentHeight),
+        ) {
+            Image(
+                bitmap = image,
+                contentDescription = null,
+                modifier = Modifier
+                    .align(Alignment.BottomEnd)
+                    .padding(
+                        end = contentWidth * CameraWatermark.FRAME_MARGIN_FRACTION,
+                        bottom = contentWidth * CameraWatermark.FRAME_MARGIN_FRACTION +
+                            navigationClearance,
+                    )
+                    .width(contentWidth * CameraWatermark.FRAME_WIDTH_FRACTION)
+                    .aspectRatio(
+                        CameraWatermark.TEXTURE_WIDTH.toFloat() /
+                            CameraWatermark.TEXTURE_HEIGHT.toFloat(),
+                    ),
+            )
+        }
     }
 }
 

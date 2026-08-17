@@ -51,6 +51,16 @@ public class RendererHolder extends EGLTask implements IRendererHolder {
     protected static final int REQUEST_RELEASE_PRIMARY_SURFACE = 14;
     protected static final int REQUEST_RELEASE = 99;
 
+    private static final class SlaveSurfaceRequest {
+        final Object surface;
+        final boolean recordable;
+
+        SlaveSurfaceRequest(final Object surface, final boolean recordable) {
+            this.surface = surface;
+            this.recordable = recordable;
+        }
+    }
+
     protected final Context mContext = UVCUtils.getApplication();
     @Nullable
     private final RendererHolderCallback mCallback;
@@ -223,7 +233,11 @@ public class RendererHolder extends EGLTask implements IRendererHolder {
         }
         synchronized (mSlaveSurfaces) {
             if (mSlaveSurfaces.get(id) == null) {
-                mRendererHandler.sendMessage(mRendererHandler.obtainMessage(REQUEST_ADD_SLAVE_SURFACE, id, maxFps, surface));
+                mRendererHandler.sendMessage(mRendererHandler.obtainMessage(
+                        REQUEST_ADD_SLAVE_SURFACE,
+                        id,
+                        maxFps,
+                        new SlaveSurfaceRequest(surface, isRecordable)));
                 try {
                     mSlaveSurfaces.wait(1000);
                 } catch (InterruptedException e) {
@@ -387,6 +401,11 @@ public class RendererHolder extends EGLTask implements IRendererHolder {
         surface.draw(mDrawer, texId, texMatrix, mvpMatrix);
     }
 
+    @NonNull
+    protected final GLDrawer2D getDrawer() {
+        return mDrawer;
+    }
+
     protected void onPrimarySurfaceCreate(Surface surface) {
         if (mCallback != null) {
             try {
@@ -539,18 +558,20 @@ public class RendererHolder extends EGLTask implements IRendererHolder {
         }
 
         protected void handleAddSlaveSurface(final int id,
-                                             final Object surface, final int maxFps) {
+                                             final Object requestObject, final int maxFps) {
 
             if (DEBUG) Log.v(TAG, "handleAddSurface:id=" + id);
             checkSurface();
+            final SlaveSurfaceRequest request = (SlaveSurfaceRequest) requestObject;
             synchronized (mSlaveSurfaces) {
                 RendererSurface slaveSurface = mSlaveSurfaces.get(id);
                 if (slaveSurface == null) {
                     try {
-                        slaveSurface = RendererSurface.newInstance(getEgl(), surface, maxFps);
+                        slaveSurface = RendererSurface.newInstance(
+                                getEgl(), request.surface, maxFps, request.recordable);
                         mSlaveSurfaces.append(id, slaveSurface);
                     } catch (final Exception e) {
-                        Log.e(TAG, "invalid surface: surface=" + surface, e);
+                        Log.e(TAG, "invalid surface: surface=" + request.surface, e);
                     }
                 } else {
                     Log.w(TAG, "surface is already added: id=" + id);
