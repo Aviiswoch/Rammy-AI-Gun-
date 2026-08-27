@@ -388,7 +388,7 @@ private fun LiveCameraWatermark(
                         bottom = contentWidth * CameraWatermark.FRAME_MARGIN_FRACTION +
                             navigationClearance,
                     )
-                    .width(contentWidth * CameraWatermark.FRAME_WIDTH_FRACTION)
+                    .width(contentWidth * CameraWatermark.FRAME_WIDTH_FRACTION * 1.30f)
                     .aspectRatio(
                         CameraWatermark.TEXTURE_WIDTH.toFloat() /
                             CameraWatermark.TEXTURE_HEIGHT.toFloat(),
