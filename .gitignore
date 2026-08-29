@@ -32,6 +32,10 @@ compile_commands.json
 *.apk
 *.aab
 
+# Android signing credentials
+*.jks
+*.keystore
+
 # Apple/Xcode generated state
 *.xcuserstate
 xcuserdata/
