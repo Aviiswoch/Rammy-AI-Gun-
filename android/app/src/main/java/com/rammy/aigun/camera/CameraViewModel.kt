@@ -22,6 +22,8 @@ class CameraViewModel(application: Application) : AndroidViewModel(application) 
     fun rotatePreviewClockwise() = controller.rotatePreviewClockwise()
     fun toggleDisplayMode() = controller.toggleDisplayMode()
     fun onAppBackgrounded() = controller.onAppBackgrounded()
+    fun onHostResume() = controller.onHostResume()
+    fun onHostPause() = controller.onHostPause()
 
     override fun onCleared() {
         controller.destroy()
