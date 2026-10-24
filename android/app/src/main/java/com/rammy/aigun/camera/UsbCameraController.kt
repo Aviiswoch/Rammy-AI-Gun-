@@ -89,6 +89,8 @@ class UsbCameraController(context: Context) {
     private var started = false
     private var receiverRegistered = false
     private var usbPermissionRequestInFlight = false
+    private var usbPermissionDenyCount = 0
+    private var unregisterDeferredForPermission = false
     private var connectionStartedAt = 0L
     private var activePhoto: ActivePhoto? = null
     private var activeRecording: ActiveRecording? = null
@@ -106,6 +108,7 @@ class UsbCameraController(context: Context) {
 
     private val usbReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
+            debug("[USB] Broadcast received action=${intent.action}")
             when (intent.action) {
                 ACTION_USB_PERMISSION -> handleUsbPermissionResult(intent.usbDevice(), intent)
                 UsbManager.ACTION_USB_DEVICE_ATTACHED -> {
@@ -164,6 +167,7 @@ class UsbCameraController(context: Context) {
 
         override fun onCameraOpen(device: UsbDevice) {
             if (!isCurrent(device)) return
+            debug("[USB] Camera opened")
             val size = helper?.previewSize ?: selectedSize
             debug(
                 "[UVC] Stream negotiated ${size?.width ?: 0}x${size?.height ?: 0} " +
@@ -211,14 +215,19 @@ class UsbCameraController(context: Context) {
         override fun onCancel(device: UsbDevice) {
             if (!isCurrent(device)) return
             usbPermissionRequestInFlight = false
+            flushDeferredUnregister()
             if (usbManager.hasPermission(device)) {
                 fail(
                     stage = "UVC_LIBRARY_OPEN_CANCELLED",
                     message = "USB access was granted, but the UVC camera could not be opened.",
                 )
             } else {
-                debug("[USB] Permission granted=false (library callback)")
-                mutableState.value = CameraConnectionState.UsbPermissionDenied(device.toSummary())
+                usbPermissionDenyCount++
+                debug("[USB] Permission granted=false (library callback) denyCount=$usbPermissionDenyCount")
+                mutableState.value = CameraConnectionState.UsbPermissionDenied(
+                    device.toSummary(),
+                    suggestSettings = usbPermissionDenyCount >= 2,
+                )
             }
         }
 
@@ -269,11 +278,14 @@ class UsbCameraController(context: Context) {
 
     /** Called after the in-app CAMERA explanation, or to retry USB permission. */
     fun allowAndConnect() {
+        debug("[USB] Allow & Connect clicked state=${mutableState.value::class.simpleName}")
         val device = currentDevice ?: run {
+            debug("[USB] Allow & Connect: no tracked device; rescanning")
             rescan(userInitiated = true)
             return
         }
         if (!hasCameraPermission()) {
+            debug("[USB] Allow & Connect: camera runtime permission still missing")
             mutableState.value = CameraConnectionState.CameraPermissionRequired(device.toSummary())
             return
         }
@@ -418,6 +430,29 @@ class UsbCameraController(context: Context) {
         stopRecordingSafely("App moved to background")
     }
 
+    /**
+     * Receiver lifecycle follows the host activity. The system USB permission dialog pauses the
+     * activity while it is shown, so unregistering in onPause is deferred while a permission
+     * request is in flight — otherwise the result broadcast would be lost on exactly the phones
+     * where the dialog runs as a separate full-screen activity.
+     */
+    fun onHostResume() {
+        if (!started) return
+        debug("[USB] Host resumed; receiver registered and devices rescanned")
+        registerUsbReceiver()
+        rescan()
+    }
+
+    fun onHostPause() {
+        if (!receiverRegistered) return
+        if (usbPermissionRequestInFlight) {
+            debug("[USB] Host paused during permission request; unregister deferred")
+            unregisterDeferredForPermission = true
+            return
+        }
+        unregisterUsbReceiver()
+    }
+
     fun destroy() {
         stopRecordingSafely("App closed")
         cancelActivePhoto()
@@ -425,10 +460,8 @@ class UsbCameraController(context: Context) {
         helper?.setStateCallback(null)
         helper?.releaseAll()
         helper = null
-        if (receiverRegistered) {
-            runCatching { appContext.unregisterReceiver(usbReceiver) }
-            receiverRegistered = false
-        }
+        unregisterDeferredForPermission = false
+        unregisterUsbReceiver()
         started = false
     }
 
@@ -683,13 +716,32 @@ class UsbCameraController(context: Context) {
             addAction(UsbManager.ACTION_USB_DEVICE_ATTACHED)
             addAction(UsbManager.ACTION_USB_DEVICE_DETACHED)
         }
+        // RECEIVER_NOT_EXPORTED is mandatory on API 33+ for an app-private action: it keeps other
+        // apps from forging a grant broadcast, while broadcasts from the system (UsbManager
+        // permission result, attach/detach) are still delivered to not-exported receivers.
         ContextCompat.registerReceiver(
             appContext,
             usbReceiver,
             filter,
-            ContextCompat.RECEIVER_EXPORTED,
+            ContextCompat.RECEIVER_NOT_EXPORTED,
         )
         receiverRegistered = true
+        debug("[USB] Receiver registered (NOT_EXPORTED)")
+    }
+
+    private fun unregisterUsbReceiver() {
+        if (!receiverRegistered) return
+        runCatching { appContext.unregisterReceiver(usbReceiver) }
+            .onFailure { Log.e(USB_TAG, "[USB] unregisterReceiver failed", it) }
+        receiverRegistered = false
+        debug("[USB] Receiver unregistered")
+    }
+
+    private fun flushDeferredUnregister() {
+        if (!unregisterDeferredForPermission) return
+        unregisterDeferredForPermission = false
+        debug("[USB] Permission flow finished; applying deferred unregister")
+        unregisterUsbReceiver()
     }
 
     private fun handleEnumeratedCamera(device: UsbDevice, force: Boolean = false) {
@@ -747,7 +799,12 @@ class UsbCameraController(context: Context) {
     }
 
     private fun continueAfterCameraPermission(device: UsbDevice, force: Boolean) {
-        if (!isCurrent(device)) return
+        if (!isCurrent(device)) {
+            // A stale UsbDevice reference after replug used to make "Allow & Connect" a no-op.
+            Log.w(USB_TAG, "[USB] Stale device reference; rescanning instead of ignoring the tap")
+            rescan(userInitiated = true)
+            return
+        }
         mutableDiagnostics.value = mutableDiagnostics.value.copy(cameraPermissionGranted = true)
         if (usbManager.hasPermission(device)) {
             openAuthorizedDevice(device)
@@ -764,25 +821,43 @@ class UsbCameraController(context: Context) {
         metric("permissionRequestMs", connectionElapsed())
         try {
             usbManager.requestPermission(device, permissionIntent)
+            debug("[USB] Permission requested; waiting for broadcast")
         } catch (error: RuntimeException) {
             usbPermissionRequestInFlight = false
+            Log.e(USB_TAG, "[USB] requestPermission threw", error)
             fail("USB_PERMISSION_REQUEST_FAILED", error.message ?: "USB permission request failed.")
         }
     }
 
     private fun handleUsbPermissionResult(deviceFromIntent: UsbDevice?, intent: Intent) {
         usbPermissionRequestInFlight = false
-        val device = deviceFromIntent ?: currentDevice ?: return
-        if (!isCurrent(device)) return
+        flushDeferredUnregister()
+        val device = deviceFromIntent ?: currentDevice ?: run {
+            Log.w(USB_TAG, "[USB] Permission result carried no device and none is tracked")
+            return
+        }
+        if (!isCurrent(device)) {
+            Log.w(USB_TAG, "[USB] Permission result for stale device=${device.deviceName}; ignoring")
+            return
+        }
         val grantedByIntent = intent.getBooleanExtra(UsbManager.EXTRA_PERMISSION_GRANTED, false)
-        val granted = grantedByIntent && usbManager.hasPermission(device)
-        debug("[USB] Permission granted=$granted")
+        val platformGranted = usbManager.hasPermission(device)
+        val granted = grantedByIntent && platformGranted
+        debug("[USB] Permission broadcast extraGranted=$grantedByIntent hasPermission=$platformGranted")
         mutableDiagnostics.value = mutableDiagnostics.value.copy(usbPermissionGranted = granted)
         if (granted) {
+            usbPermissionDenyCount = 0
             metric("permissionGrantedMs", connectionElapsed())
             openAuthorizedDevice(device)
         } else {
-            mutableState.value = CameraConnectionState.UsbPermissionDenied(device.toSummary())
+            usbPermissionDenyCount++
+            // After repeated denials (or an OEM "don't ask again" that suppresses the dialog),
+            // point the user at App Settings instead of looping the same failing request.
+            debug("[USB] Permission denied denyCount=$usbPermissionDenyCount")
+            mutableState.value = CameraConnectionState.UsbPermissionDenied(
+                device.toSummary(),
+                suggestSettings = usbPermissionDenyCount >= 2,
+            )
         }
     }
 
@@ -825,6 +900,8 @@ class UsbCameraController(context: Context) {
         closeCurrentCamera()
         currentDevice = null
         usbPermissionRequestInFlight = false
+        usbPermissionDenyCount = 0
+        flushDeferredUnregister()
         mutableDiagnostics.value = mutableDiagnostics.value.copy(
             connectedDeviceCount = usbManager.deviceList.size,
             cameraDetected = false,
@@ -1106,7 +1183,7 @@ class UsbCameraController(context: Context) {
     private fun isCurrent(device: UsbDevice): Boolean = device.deviceId == currentDevice?.deviceId
 
     private fun fail(stage: String, message: String, retryable: Boolean = true) {
-        debug("[USB] $stage: $message")
+        Log.e(USB_TAG, "[USB] $stage: $message")
         mutableDiagnostics.value = mutableDiagnostics.value.copy(lastFailureStage = stage)
         mutableState.value = CameraConnectionState.Error(stage, message, retryable)
     }
@@ -1119,7 +1196,9 @@ class UsbCameraController(context: Context) {
     }
 
     private fun debug(message: String) {
-        if (BuildConfig.DEBUG) Log.d(USB_TAG, message)
+        // Permission/connection flow must be traceable in release builds too: Logcat is the only
+        // diagnostics channel on a phone with no server and no attached debugger.
+        Log.d(USB_TAG, message)
     }
 
     @Suppress("DEPRECATION")

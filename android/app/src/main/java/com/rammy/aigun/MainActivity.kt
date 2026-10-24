@@ -42,7 +42,12 @@ class MainActivity : ComponentActivity() {
 
     override fun onResume() {
         super.onResume()
-        viewModel.rescan()
+        viewModel.onHostResume()
+    }
+
+    override fun onPause() {
+        viewModel.onHostPause()
+        super.onPause()
     }
 
     override fun onStop() {

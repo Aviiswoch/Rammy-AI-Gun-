@@ -635,11 +635,16 @@ private fun ConnectionOverlay(
         }
         is CameraConnectionState.UsbPermissionDenied -> {
             title = "USB camera permission is required"
-            detail = "USB camera permission is required to display the external camera."
+            detail = if (state.suggestSettings) {
+                "USB camera permission is required to display the external camera. " +
+                    "Enable it in App Settings > Permissions, then return here."
+            } else {
+                "USB camera permission is required to display the external camera."
+            }
             icon = Icons.Rounded.Usb
             spinning = false
-            button = "Allow & Connect"
-            action = onAllow
+            button = if (state.suggestSettings) "Open Settings" else "Allow & Connect"
+            action = if (state.suggestSettings) onOpenSettings else onAllow
         }
         is CameraConnectionState.NoDeviceEnumerated -> {
             title = "USB camera could not be detected"
